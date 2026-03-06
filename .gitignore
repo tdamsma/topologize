@@ -1,0 +1,10 @@
+/target/
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.pyd
+.venv/
+dist/
+*.egg-info/
+.claude/

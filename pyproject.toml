@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "topologize"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "topologize._internal"
+python-source = "python"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
