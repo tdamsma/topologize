@@ -5,11 +5,12 @@ use clipper2_rust::{area, inflate_paths_d, union_subjects_d, EndType, FillRule, 
 
 type Pt = (f64, f64);
 
-// arc_tolerance = 0.4 × buffer_distance → ~2 arc segments per semicircular cap.
+// arc_tolerance = factor × buffer_distance controls end-cap smoothness.
 // Formula: steps = π / arccos(1 - arc_tol / delta)
-// at 0.4: steps ≈ π / arccos(0.6) ≈ π / 0.927 ≈ 3.4  (rounds to 3)
-// at 0.5: steps ≈ π / arccos(0.5) ≈ π / 1.047 ≈ 3.0  (2 midpoints → 2 segs)
-const ARC_TOL_FACTOR: f64 = 0.5;
+// at 0.50: steps ≈ 3.0  (2 midpoints — visibly polygonal)
+// at 0.20: steps ≈ 4.9  (~5 segments — smooth)
+// at 0.10: steps ≈ 7.0  (7 segments — very smooth, more points)
+const ARC_TOL_FACTOR: f64 = 0.2;
 
 /// Inflate a list of polylines by `buffer_distance`, union all results,
 /// and return as (outer, holes) polygon pairs.
