@@ -17,5 +17,7 @@ python-source = "python"
 
 [dependency-groups]
 dev = [
+    "kaleido>=1.2.0",
+    "matplotlib>=3.10.8",
     "pytest>=9.0.2",
 ]

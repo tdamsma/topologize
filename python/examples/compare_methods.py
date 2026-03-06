@@ -1,6 +1,6 @@
 # %%
 """
-Midpoint centerline method on sample geometry.
+Centerline visualization with buffer overlay.
 
 Usage:
     uv run python/examples/compare_methods.py
@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 
 from topologize import topologize
 
-# %%  --- input geometry (same as prototype.py) ---
+# %%  --- input geometry (same as getting_started.py) ---
 
 p_pts = np.array([[0.0, 2.0], [10.0, 0.0], [5.0, 0.1], [5.0, 5.0]])
 
@@ -39,9 +39,8 @@ buffer_distance = 0.6
 
 # %% --- run ---
 
-chains_midpoint = topologize(curves, buffer_distance)
-
-print(f"midpoint : {len(chains_midpoint)} chains")
+chains = topologize(curves, buffer_distance)
+print(f"topologize: {len(chains)} chains, {sum(len(c) for c in chains)} pts")
 
 # %% --- build NaN-separated arrays ---
 
@@ -54,9 +53,7 @@ def nan_stack(chains):
     return np.concatenate([np.vstack([c, NAN]) for c in chains])
 
 
-mid_pts = nan_stack(chains_midpoint)
-
-# input strokes
+chain_pts = nan_stack(chains)
 input_pts = np.concatenate([np.vstack([c, NAN]) for c in curves])
 
 # buffer boundary via shapely
@@ -74,7 +71,7 @@ buf_pts = np.concatenate([np.vstack([np.array(r.coords), NAN]) for r in rings])
 
 # %% --- plot ---
 
-traces = [
+fig = go.Figure([
     go.Scatter(
         x=input_pts[:, 0], y=input_pts[:, 1], mode="lines",
         name="input",
@@ -86,15 +83,14 @@ traces = [
         line=dict(color="rgba(120,120,120,0.35)", width=1, dash="dot"),
     ),
     go.Scatter(
-        x=mid_pts[:, 0], y=mid_pts[:, 1], mode="lines",
-        name="midpoint",
+        x=chain_pts[:, 0], y=chain_pts[:, 1], mode="lines",
+        name="centerline",
         line=dict(color="#e41a1c", width=2),
     ),
-]
+])
 
-fig = go.Figure(traces)
 fig.update_layout(
-    title=f"Centerline — buf={buffer_distance} | midpoint={len(chains_midpoint)} chains",
+    title=f"Centerline — buf={buffer_distance} | {len(chains)} chains",
     yaxis_scaleanchor="x",
     width=1100,
     height=700,

@@ -1,64 +1,90 @@
 # topologize
 
-Convert messy, overlapping polylines into clean centerline chains.
+**Convert messy, overlapping polylines into a clean topological skeleton.**
 
-Given a set of curves (open or closed, possibly intersecting), `topologize` inflates them into a region, skeletonizes that region, and returns a list of maximal non-branching polylines — one per continuous segment of the medial axis.
+Given a set of curves — open or closed, possibly intersecting or bundled — `topologize` inflates them into a region, skeletonizes that region via constrained Delaunay triangulation, and returns a list of maximal non-branching polylines tracing the medial axis.
 
-## Use case
+![Before and after on synthetic geometry](docs/example_simple.png)
 
-The typical input is a bundle of strokes that approximate the same underlying path (e.g. vector artwork, GPS traces, hand-drawn curves). The output is a single clean skeleton of the shared shape.
+## What it does
+
+The three-stage pipeline:
+
+1. **Inflate** — buffer all input curves by `buffer_distance` and union the results into one or more polygons (Clipper2)
+2. **Skeletonize** — constrained Delaunay triangulation of the polygon interior; midpoints of internal edges form the skeleton graph
+3. **Extract chains** — snap nearby endpoints, then traverse the graph to extract maximal non-branching polylines
+
+The output chains share junction points, so the result is a proper topological graph: you can traverse it, measure it, and match it to other representations.
+
+## When to use it
+
+- Redundant or parallel strokes that should resolve to a single path (scanned drawings, vector artwork cleaned up manually, multi-pass traces)
+- GPS or sensor traces where the same route was recorded multiple times
+- Road / river / network centerline extraction from buffered polygon data
+- Any situation where you have *geometry that approximates a graph* and need *an actual graph*
+
+![Before and after on SVG input](docs/example_svg.png)
 
 ## Installation
 
-Requires a Rust toolchain and `maturin`.
+Requires a Rust toolchain (stable) and [`uv`](https://github.com/astral-sh/uv) or `pip` with `maturin`.
 
 ```bash
+git clone https://github.com/yourname/topologize
+cd topologize
 uv run maturin develop --release
 ```
 
 Runtime dependency: `numpy` only.
 
-## Usage
+## Quick start
 
 ```python
 import numpy as np
 from topologize import topologize
 
+# Any collection of (N, 2) numpy arrays — open or closed, overlapping is fine
 curves = [
     np.array([[0.0, 0.0], [10.0, 0.0], [5.0, 5.0]]),
-    np.array([[0.1, 0.1], [9.9, 0.1], [5.0, 4.9]]),
+    np.array([[0.1, 0.1], [9.9, 0.1], [5.1, 4.9]]),  # near-duplicate stroke
 ]
 
 chains = topologize(curves, buffer_distance=0.5)
-# chains: list of (N, 2) numpy arrays
+# → list of (M, 2) numpy arrays, one per non-branching segment
 ```
+
+`buffer_distance` is the single tuning parameter. Use roughly **half the typical gap between nearby strokes** — small enough to keep distinct paths separate, large enough to merge strokes that belong together.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `curves` | `list[np.ndarray]` | Input polylines, each an `(N, 2)` array. Closed curves should repeat the first point at the end. |
-| `buffer_distance` | `float` | Inflation radius. Use roughly half the typical gap between nearby strokes. |
+| `curves` | `list[np.ndarray]` | Input polylines, each `(N, 2)`. Closed curves should repeat the first point at the end. |
+| `buffer_distance` | `float` | Inflation radius. |
+| `simplification` | `float \| None` | RDP tolerance on output chains (default: `buffer_distance / 10`). Set to `0` to disable. |
 
-### SVG input
+## SVG input
+
+The package includes a helper for reading SVG files directly:
 
 ```python
 from topologize.helpers import load_svg
+from topologize import topologize
 
 curves = load_svg("path/to/file.svg")
 chains = topologize(curves, buffer_distance=10.0)
 ```
 
-The SVG parser handles nested groups, transforms (`matrix`, `translate`, `scale`), and path commands `M L H V Q C Z` (absolute and relative). Beziers are discretized at a fixed sample distance.
+The SVG parser handles nested groups, transforms (`matrix`, `translate`, `scale`), and path commands `M L H V Q C Z` (absolute and relative). Béziers are discretised at a fixed sample distance.
 
 ## Examples
 
 All examples are `# %%` cell-delimited Python files — run directly or open as Jupyter notebooks.
 
 ```bash
-# Interactive SVG centerline plot (requires plotly: uv add --dev plotly)
+# Interactive plot (requires plotly: uv add --dev plotly)
 uv run python/examples/svg_centerline.py python/examples/data/input.svg --buffer 20
 
-# CLI summary (no visualisation)
-uv run python scripts/topologize_svg.py python/examples/data/input.svg --buffer 20
+# Minimal getting-started notebook
+uv run python/examples/getting_started.py
 ```
 
 ## Benchmarks
@@ -67,42 +93,45 @@ uv run python scripts/topologize_svg.py python/examples/data/input.svg --buffer 
 uv run python benchmarks/run_all.py
 ```
 
-Datasets:
-- **simple**: four synthetic curves (two open polylines, a circle, a star) at buffer distances 0.3, 0.6, 1.2
-- **svg**: paths extracted from a real SVG file at buffer distances 5, 10, 20, 50
+On the included SVG dataset (~20 curves, 16 000 points) at `buffer_distance=20`:
+
+| Stage | Time |
+|---|---|
+| Inflate (Clipper2) | ~5 ms |
+| Skeletonize (CDT) | ~11 ms |
+| Extract chains | ~1 ms |
+| **Total** | **~17 ms** |
+
+## Algorithm
+
+See [algorithm.md](algorithm.md) for a detailed description of all three pipeline stages, the boundary preprocessing steps (RDP simplification + subdivision), the post-processing applied to output chains (projection smoothing, endpoint straightening, RDP), and the rationale for the CDT midpoint approach over alternatives (Voronoi, Python prototype).
 
 ## Project structure
 
 ```
-src/                      Rust extension (PyO3 / maturin)
-  lib.rs                  pymodule entry point (_internal)
-  python.rs               Python-facing bindings
-  inflate.rs              Clipper2-based polygon inflation
-  skeleton.rs             CDT midpoint-graph skeletonizer
-  graph.rs                Endpoint snapping + chain extraction
+src/
+  lib.rs             pymodule entry point (_internal)
+  python.rs          Python-facing bindings
+  inflate.rs         Clipper2-based polygon inflation + boundary prep
+  skeleton_cdt.rs    CDT midpoint-graph skeletonizer
+  graph.rs           Endpoint snapping + chain extraction
 
 python/
-  topologize/             Python package
-    __init__.py           Public API
+  topologize/
+    __init__.py      Public API
     helpers/
-      svg_parser.py       SVG file parser
+      svg_parser.py  SVG file parser
   examples/
-    svg_centerline.py     SVG → centerline chains → Plotly visualisation
-    prototype.py          Algorithm exploration notebook
+    getting_started.py
+    svg_centerline.py
+    compare_methods.py
 
 scripts/
-  topologize_svg.py       CLI: process an SVG, print summary
+  topologize_svg.py  CLI: process an SVG, print summary
 
 benchmarks/
-  inputs.py               Shared test datasets
-  bench_quality.py        Output complexity measurements
-  bench_timing.py         CPU timing measurements
-  run_all.py              Benchmark runner
+  run_all.py         Benchmark runner
 
-Cargo.toml                Rust manifest
-pyproject.toml            Python build config (maturin)
+Cargo.toml           Rust manifest
+pyproject.toml       Python build config (maturin)
 ```
-
-## Algorithm overview
-
-See [algorithm.md](algorithm.md) for a detailed description of the three pipeline stages: inflate, skeletonize, and extract chains.
