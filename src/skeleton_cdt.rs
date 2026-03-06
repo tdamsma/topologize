@@ -13,7 +13,7 @@ type Segment = (Pt, Pt);
 
 /// Build the midpoint-graph skeleton using the `cdt` crate.
 pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>], buffer_distance: f64) -> Vec<Segment> {
-    midpoint_segments(outer, holes, buffer_distance, 1.9)
+    midpoint_segments(outer, holes, buffer_distance, 1.5)
 }
 
 fn midpoint_segments(
