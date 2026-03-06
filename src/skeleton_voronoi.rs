@@ -59,6 +59,7 @@ pub fn voronoi_skeletonize(
     };
 
     // Output vertices are in integer-scaled coordinates → divide by SCALE.
+    // Filter: discard segments whose midpoint lies outside the input polygon.
     line_strings
         .iter()
         .flat_map(|ls| {
@@ -68,7 +69,32 @@ pub fn voronoi_skeletonize(
                 (p1, p2)
             })
         })
+        .filter(|(p1, p2)| {
+            let mid = ((p1.0 + p2.0) / 2.0, (p1.1 + p2.1) / 2.0);
+            point_in_polygon(mid, outer, holes)
+        })
         .collect()
+}
+
+/// Ray-casting point-in-polygon test (even-odd rule).
+fn point_in_ring(pt: Pt, ring: &[Pt]) -> bool {
+    let (x, y) = pt;
+    let n = ring.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = ring[i];
+        let (xj, yj) = ring[j];
+        if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn point_in_polygon(pt: Pt, outer: &[Pt], holes: &[Vec<Pt>]) -> bool {
+    point_in_ring(pt, outer) && holes.iter().all(|hole| !point_in_ring(pt, hole))
 }
 
 fn rings_to_bv_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<BVLine<i32>> {

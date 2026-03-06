@@ -1,9 +1,8 @@
 //! Python-facing bindings. No pure algorithm logic here.
 
 use pyo3::prelude::*;
-use std::time::Instant;
 
-use crate::{graph, inflate, skeleton, skeleton_cdt, skeleton_voronoi};
+use crate::{graph, inflate, skeleton_cdt, skeleton_voronoi};
 
 type Pt = (f64, f64);
 
@@ -29,10 +28,9 @@ fn decimate_curve(pts: &[Pt], min_step: f64) -> Vec<Pt> {
     kept
 }
 
-/// Straighten a terminal endpoint by projecting it onto the line extrapolated
-/// from the penultimate segment. Moves the endpoint halfway toward that line
-/// (same weighting as the interior smoothing). Only call for terminal endpoints
-/// (degree-1 nodes); junction endpoints must not be moved.
+/// Straighten a terminal endpoint by projecting it halfway toward the line
+/// extrapolated from the penultimate segment direction.
+/// Only call for terminal (degree-1) endpoints; junction endpoints must stay fixed.
 fn straighten_terminal_end(pts: &mut Vec<Pt>) {
     let n = pts.len();
     if n < 3 {
@@ -47,7 +45,6 @@ fn straighten_terminal_end(pts: &mut Vec<Pt>) {
     if len_sq == 0.0 {
         return;
     }
-    // Project endpoint onto the line through pts[n-2] in direction (dx, dy).
     let t = ((ex - mx) * dx + (ey - my) * dy) / len_sq;
     let proj_x = mx + t * dx;
     let proj_y = my + t * dy;
@@ -128,7 +125,7 @@ fn rdp(pts: &[Pt], epsilon: f64) -> Vec<Pt> {
         };
         if dist > max_dist {
             max_dist = dist;
-            max_idx = i + 1; // offset by 1 because we sliced [1..]
+            max_idx = i + 1;
         }
     }
 
@@ -150,7 +147,6 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
         return pts.to_vec();
     }
     let n = pts.len();
-    // Treat the ring as closed: edges are pts[i] → pts[(i+1) % n].
     let mut result: Vec<Pt> = Vec::with_capacity(n * 2);
     for i in 0..n {
         let a = pts[i];
@@ -173,24 +169,25 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 /// Topologize a list of polylines into clean centerline chains.
 ///
 /// 1. Inflate all curves by `buffer_distance` and union them into polygons.
-/// 2. Skeletonize each polygon (midpoint CDT or Voronoi, depending on `method`).
-/// 3. Snap nearby endpoints and extract maximal non-branching chains.
+/// 2. Simplify polygon boundary (RDP), then subdivide to cap edge length.
+/// 3. Skeletonize each polygon (midpoint CDT or Voronoi).
+/// 4. Snap nearby endpoints and extract maximal non-branching chains.
+/// 5. Smooth (midpoint only) and RDP-simplify output chains.
 ///
 /// Parameters
 /// ----------
 /// curves : list of lists of (x, y) tuples
 /// buffer_distance : float
-/// method : "midpoint-spade" (default) | "midpoint-cdt" | "voronoi"
-///     "midpoint-spade" — CDT via the `spade` crate (incremental, O(n²) constraints).
-///     "midpoint-cdt"   — CDT via the `cdt` crate (sweep-line, O(n log n)).
-///     "voronoi"        — Boost Voronoi diagram via the `centerline` crate.
+/// method : "midpoint" (default) | "voronoi"
+///     "midpoint" — constrained Delaunay triangulation via the `cdt` crate.
+///     "voronoi"  — Boost Voronoi diagram via the `centerline` crate.
 /// cos_angle : float, default 0.0
 ///     Voronoi only. Cosine of the minimum acceptable angle between a Voronoi
 ///     edge and the nearest input segment. 0.0 keeps all edges; values toward
 ///     1.0 prune shallow-angle branches progressively.
 /// simplification : float, default None (= buffer_distance / 10)
-///     RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
-///     (in input units). For midpoint: applied after projection smoothing.
+///     RDP tolerance applied to output polylines (in input units).
+///     For midpoint: applied after projection smoothing.
 ///     For voronoi: applied internally by the skeletonizer.
 ///     Larger values produce fewer output points; 0.0 disables.
 ///
@@ -207,8 +204,6 @@ pub fn topologize(
     cos_angle: f64,
     simplification: Option<f64>,
 ) -> PyResult<Vec<Vec<Pt>>> {
-    let t0 = Instant::now();
-
     // Decimate dense input before inflate so clipper2 isn't fed millions of
     // nearly-duplicate points. min_step = 0.15 × buffer only removes points
     // in truly dense regions.
@@ -217,61 +212,32 @@ pub fn topologize(
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    let n_in: usize = decimated.iter().map(|c| c.len()).sum();
-    eprintln!("[timing] decimate:  {:>6.1} ms  ({} pts after)", t0.elapsed().as_secs_f64()*1e3, n_in);
 
-    let t1 = Instant::now();
     let polygons = inflate::inflate(&decimated, buffer_distance);
-    let n_poly_pts: usize = polygons.iter().map(|(o, hs)| o.len() + hs.iter().map(|h| h.len()).sum::<usize>()).sum();
-    eprintln!("[timing] inflate:   {:>6.1} ms  ({} polys, {} boundary pts)", t1.elapsed().as_secs_f64()*1e3, polygons.len(), n_poly_pts);
 
-    // Subdivide polygon ring edges after inflate so the CDT sees no edge
-    // longer than max_seg. Long boundary edges produce elongated triangles
-    // that break the midpoint skeleton. max_seg < 2 × buffer keeps triangles
-    // compact. Existing vertices are kept; only intermediate points are added.
-    // Simplify the polygon boundary: the CDT midpoint skeleton can't resolve
-    // features below buffer_distance, so near-collinear boundary points are
-    // just CDT overhead. RDP with epsilon = 0.15 × buffer reduces the dense
-    // parallel-offset boundary dramatically without affecting skeleton quality.
-    let t2 = Instant::now();
+    // RDP-simplify polygon boundary: near-collinear points from the parallel
+    // offset are pure CDT overhead — the skeleton can't resolve below
+    // buffer_distance anyway. ε = 0.15 × buffer reduces 20k+ pts to ~1k.
     let rdp_boundary = buffer_distance * 0.15;
-    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-        .into_iter()
-        .map(|(outer, holes)| {
-            let outer = rdp(&outer, rdp_boundary);
-            let holes = holes.iter().map(|h| rdp(h, rdp_boundary)).collect();
-            (outer, holes)
-        })
-        .collect();
-    let n_rdp_pts: usize = polygons.iter().map(|(o, hs)| o.len() + hs.iter().map(|h| h.len()).sum::<usize>()).sum();
-    eprintln!("[timing] rdp rings: {:>6.1} ms  ({} boundary pts after)", t2.elapsed().as_secs_f64()*1e3, n_rdp_pts);
-
-    // Subdivide ring edges after simplification so the CDT sees no edge
-    // longer than max_seg. Existing vertices are kept; only inserts new pts.
-    let t2b = Instant::now();
+    // Then subdivide so no edge exceeds 1.5 × buffer, keeping CDT triangles
+    // compact. Existing vertices are kept; only intermediate points inserted.
     let max_seg = buffer_distance * 1.5;
     let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
-            let outer = subdivide_ring(&outer, max_seg);
+            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
             let holes = holes
                 .iter()
-                .map(|h| subdivide_ring(h, max_seg))
+                .map(|h| subdivide_ring(&rdp(h, rdp_boundary), max_seg))
                 .collect();
             (outer, holes)
         })
         .collect();
-    let n_sub_pts: usize = polygons.iter().map(|(o, hs)| o.len() + hs.iter().map(|h| h.len()).sum::<usize>()).sum();
-    eprintln!("[timing] subdivide: {:>6.1} ms  ({} boundary pts after)", t2b.elapsed().as_secs_f64()*1e3, n_sub_pts);
 
     let snap_tol = buffer_distance / 20.0;
     let use_voronoi = matches!(method, Some("voronoi"));
-    let use_cdt = matches!(method, Some("midpoint-cdt"));
-    // For voronoi, rdp_tol is used internally by the skeletonizer.
-    // For midpoint variants, it is applied as a post-processing step below.
     let rdp_tol = simplification.unwrap_or(buffer_distance / 10.0);
 
-    let t3 = Instant::now();
     let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
     for (outer, holes) in &polygons {
         if outer.len() < 3 {
@@ -279,51 +245,41 @@ pub fn topologize(
         }
         let segs = if use_voronoi {
             skeleton_voronoi::voronoi_skeletonize(outer, holes, cos_angle, rdp_tol)
-        } else if use_cdt {
-            skeleton_cdt::skeletonize(outer, holes, buffer_distance)
         } else {
-            skeleton::skeletonize(outer, holes, buffer_distance)
+            skeleton_cdt::skeletonize(outer, holes, buffer_distance)
         };
         all_segments.extend(segs);
     }
-    eprintln!("[timing] skeleton:  {:>6.1} ms  ({} segments)", t3.elapsed().as_secs_f64()*1e3, all_segments.len());
 
     if all_segments.is_empty() {
         return Ok(vec![]);
     }
 
-    let t4 = Instant::now();
     let graph = graph::segments_to_graph(&all_segments, snap_tol);
     let chains = graph::extract_chains(&graph);
-    eprintln!("[timing] graph:     {:>6.1} ms  ({} chains)", t4.elapsed().as_secs_f64()*1e3, chains.len());
 
-    // Post-process midpoint chains: smooth out CDT zigzag, then RDP.
-    // Voronoi already applies RDP internally; skip post-processing for it.
+    // Voronoi applies RDP internally; skip midpoint post-processing for it.
     if use_voronoi {
         return Ok(chains.into_iter().map(|c| c.pts).collect());
     }
-    // Both midpoint-spade and midpoint-cdt go through the same post-processing.
 
-    let t5 = Instant::now();
     let out: Vec<Vec<Pt>> = chains
         .into_iter()
         .map(|chain| {
             let graph::Chain { mut pts, start_terminal, end_terminal } = chain;
-            // Three passes of projection smoothing to reduce the staircase
+            // Three passes of projection smoothing reduce the staircase
             // artifact from alternating CDT triangle orientations.
             pts = smooth_chain_pass(&pts);
             pts = smooth_chain_pass(&pts);
             pts = smooth_chain_pass(&pts);
-            // Straighten terminal endpoints: project the endpoint onto the
-            // extrapolated chain direction. Junction endpoints are left fixed
-            // so chains remain connected.
+            // Straighten terminal endpoints along the extrapolated chain
+            // direction. Junction endpoints stay fixed to preserve connectivity.
             if end_terminal {
                 straighten_terminal_end(&mut pts);
             }
             if start_terminal {
                 straighten_terminal_start(&mut pts);
             }
-            // RDP to remove redundant points on near-straight runs.
             if rdp_tol > 0.0 {
                 rdp(&pts, rdp_tol)
             } else {
@@ -331,10 +287,6 @@ pub fn topologize(
             }
         })
         .collect();
-
-    let n_out_pts: usize = out.iter().map(|c| c.len()).sum();
-    eprintln!("[timing] postproc:  {:>6.1} ms  ({} chains, {} pts)", t5.elapsed().as_secs_f64()*1e3, out.len(), n_out_pts);
-    eprintln!("[timing] total:     {:>6.1} ms", t0.elapsed().as_secs_f64()*1e3);
 
     Ok(out)
 }

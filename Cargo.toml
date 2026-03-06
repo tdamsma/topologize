@@ -10,8 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"] }
 clipper2-rust = "1.0"
-spade = "2"
+cdt = "0.1"
 centerline = "0.14"
 boostvoronoi = "0.12"
 glam = "0.30"
-cdt = "0.1.0"
