@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 use std::time::Instant;
 
-use crate::{graph, inflate, skeleton, skeleton_voronoi};
+use crate::{graph, inflate, skeleton, skeleton_cdt, skeleton_voronoi};
 
 type Pt = (f64, f64);
 
@@ -180,9 +180,10 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 /// ----------
 /// curves : list of lists of (x, y) tuples
 /// buffer_distance : float
-/// method : "midpoint" (default) | "voronoi"
-///     "midpoint" — constrained Delaunay triangulation, midpoint graph.
-///     "voronoi"  — Boost Voronoi diagram via the `centerline` crate.
+/// method : "midpoint-spade" (default) | "midpoint-cdt" | "voronoi"
+///     "midpoint-spade" — CDT via the `spade` crate (incremental, O(n²) constraints).
+///     "midpoint-cdt"   — CDT via the `cdt` crate (sweep-line, O(n log n)).
+///     "voronoi"        — Boost Voronoi diagram via the `centerline` crate.
 /// cos_angle : float, default 0.0
 ///     Voronoi only. Cosine of the minimum acceptable angle between a Voronoi
 ///     edge and the nearest input segment. 0.0 keeps all edges; values toward
@@ -265,8 +266,9 @@ pub fn topologize(
 
     let snap_tol = buffer_distance / 20.0;
     let use_voronoi = matches!(method, Some("voronoi"));
+    let use_cdt = matches!(method, Some("midpoint-cdt"));
     // For voronoi, rdp_tol is used internally by the skeletonizer.
-    // For midpoint, it is applied as a post-processing step below.
+    // For midpoint variants, it is applied as a post-processing step below.
     let rdp_tol = simplification.unwrap_or(buffer_distance / 10.0);
 
     let t3 = Instant::now();
@@ -277,6 +279,8 @@ pub fn topologize(
         }
         let segs = if use_voronoi {
             skeleton_voronoi::voronoi_skeletonize(outer, holes, cos_angle, rdp_tol)
+        } else if use_cdt {
+            skeleton_cdt::skeletonize(outer, holes, buffer_distance)
         } else {
             skeleton::skeletonize(outer, holes, buffer_distance)
         };
@@ -298,6 +302,7 @@ pub fn topologize(
     if use_voronoi {
         return Ok(chains.into_iter().map(|c| c.pts).collect());
     }
+    // Both midpoint-spade and midpoint-cdt go through the same post-processing.
 
     let t5 = Instant::now();
     let out: Vec<Vec<Pt>> = chains

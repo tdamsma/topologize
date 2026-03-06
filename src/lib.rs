@@ -4,6 +4,7 @@ mod graph;
 mod inflate;
 mod python;
 mod skeleton;
+mod skeleton_cdt;
 mod skeleton_voronoi;
 
 use pyo3::prelude::*;

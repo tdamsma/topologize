@@ -59,9 +59,10 @@ def plot(curves, results, buffer_distance):
 
     NAN = np.full((1, 2), np.nan)
     METHOD_COLORS = {
-        "python":   "#377eb8",
-        "midpoint": "#e41a1c",
-        "voronoi":  "#4daf4a",
+        "python":        "#377eb8",
+        "midpoint-spade": "#e41a1c",
+        "midpoint-cdt":  "#ff7f00",
+        "voronoi":       "#4daf4a",
     }
 
     traces = []
@@ -137,8 +138,11 @@ def main():
     except ImportError as e:
         print(f"  python method unavailable ({e})")
 
-    # Rust midpoint
-    results["midpoint"] = _run("midpoint", lambda: topologize(curves, buf, method="midpoint"))
+    # Rust midpoint-spade
+    results["midpoint-spade"] = _run("midpoint-spade", lambda: topologize(curves, buf, method="midpoint-spade"))
+
+    # Rust midpoint-cdt
+    results["midpoint-cdt"] = _run("midpoint-cdt", lambda: topologize(curves, buf, method="midpoint-cdt"))
 
     # Rust voronoi
     try:

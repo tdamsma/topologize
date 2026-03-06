@@ -24,10 +24,11 @@ def topologize(
         Input polylines. Closed curves should repeat the first point at the end.
     buffer_distance : float
         Inflation radius. Use roughly half the typical gap between nearby strokes.
-    method : "midpoint" (default) | "voronoi"
+    method : "midpoint-spade" (default) | "midpoint-cdt" | "voronoi"
         Skeletonization algorithm.
-        "midpoint" — constrained Delaunay triangulation, midpoint graph.
-        "voronoi"  — Boost Voronoi diagram via the `centerline` crate.
+        "midpoint-spade" — CDT via spade (incremental, stable).
+        "midpoint-cdt"   — CDT via the cdt crate (sweep-line, faster).
+        "voronoi"        — Boost Voronoi diagram via the centerline crate.
     cos_angle : float, default 0.0
         Voronoi only. Cosine of the minimum acceptable angle between a Voronoi
         edge and the nearest input segment. 0.0 keeps all edges; values toward
