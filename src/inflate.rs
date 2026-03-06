@@ -1,7 +1,7 @@
 //! Inflate polylines using clipper2-rust, then union the results.
 //! Returns a list of (outer_ring, holes) pairs.
 
-use clipper2_rust::{area, inflate_paths_d, simplify_paths, union_subjects_d, EndType, FillRule, JoinType, Point};
+use clipper2_rust::{area, inflate_paths_d, union_subjects_d, EndType, FillRule, JoinType, Point};
 
 type Pt = (f64, f64);
 
