@@ -182,18 +182,25 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 ///     RDP tolerance applied to output polylines (in input units), applied
 ///     after projection smoothing. Larger values produce fewer output points;
 ///     0.0 disables.
+/// min_tip_length : float, default None (= buffer_distance * 2)
+///     Prune terminal chains shorter than this length before chain extraction.
+///     Set to 0.0 to disable pruning.
 ///
 /// Returns
 /// -------
-/// list of lists of (x, y) tuples
+/// (chains, nodes, chain_node_ids) where:
+///   chains        : list of lists of (x, y) tuples
+///   nodes         : list of (x, y) tuples — one per unique chain endpoint
+///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, simplification=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None))]
 pub fn topologize(
     _py: Python<'_>,
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     simplification: Option<f64>,
-) -> PyResult<Vec<Vec<Pt>>> {
+    min_tip_length: Option<f64>,
+) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
     // Decimate dense input before inflate so clipper2 isn't fed millions of
     // nearly-duplicate points. min_step = 0.15 × buffer only removes points
     // in truly dense regions.
@@ -236,16 +243,24 @@ pub fn topologize(
     }
 
     if all_segments.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![], vec![]));
     }
 
-    let graph = graph::segments_to_graph(&all_segments, snap_tol);
+    let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
+    let tip_len = min_tip_length.unwrap_or(buffer_distance * 2.0);
+    let graph = if tip_len > 0.0 {
+        graph::prune_short_tips(&raw_graph, tip_len)
+    } else {
+        raw_graph
+    };
     let chains = graph::extract_chains(&graph);
 
-    let out: Vec<Vec<Pt>> = chains
+    // Post-process each chain; preserve raw node indices for topology output.
+    let processed: Vec<(Vec<Pt>, usize, usize)> = chains
         .into_iter()
         .map(|chain| {
-            let graph::Chain { mut pts, start_terminal, end_terminal } = chain;
+            let graph::Chain { mut pts, start_terminal, end_terminal, start_node, end_node } =
+                chain;
             // Three passes of projection smoothing reduce the staircase
             // artifact from alternating CDT triangle orientations.
             pts = smooth_chain_pass(&pts);
@@ -260,12 +275,41 @@ pub fn topologize(
                 straighten_terminal_start(&mut pts);
             }
             if rdp_tol > 0.0 {
-                rdp(&pts, rdp_tol)
-            } else {
-                pts
+                pts = rdp(&pts, rdp_tol);
             }
+            (pts, start_node, end_node)
         })
         .collect();
 
-    Ok(out)
+    // Build a compact node list from final chain endpoints.
+    // Junction endpoints are never moved by post-processing, so their
+    // positions are consistent across all chains that share the node.
+    let mut node_remap: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut nodes: Vec<Pt> = Vec::new();
+    let mut chain_node_ids: Vec<(usize, usize)> = Vec::new();
+
+    for (pts, sn, en) in &processed {
+        let compact_s = if let Some(&id) = node_remap.get(sn) {
+            id
+        } else {
+            let id = nodes.len();
+            nodes.push(pts[0]);
+            node_remap.insert(*sn, id);
+            id
+        };
+        let compact_e = if let Some(&id) = node_remap.get(en) {
+            id
+        } else {
+            let id = nodes.len();
+            nodes.push(*pts.last().unwrap());
+            node_remap.insert(*en, id);
+            id
+        };
+        chain_node_ids.push((compact_s, compact_e));
+    }
+
+    let out: Vec<Vec<Pt>> = processed.into_iter().map(|(pts, _, _)| pts).collect();
+
+    Ok((out, nodes, chain_node_ids))
 }

@@ -65,6 +65,91 @@ pub struct Chain {
     pub pts: Vec<Pt>,
     pub start_terminal: bool,
     pub end_terminal: bool,
+    pub start_node: usize,
+    pub end_node: usize,
+}
+
+/// Iteratively remove terminal edges shorter than `min_tip_len`.
+///
+/// A "tip" is the chain from a degree-1 node through degree-2 nodes up to
+/// the first junction (degree ≥ 3) or dead-end. If its arc length is less
+/// than `min_tip_len`, all its edges are removed. This repeats until no
+/// more short tips remain (removing a tip can expose a new terminal at the
+/// former junction, which may itself be a short tip).
+pub fn prune_short_tips(graph: &Graph, min_tip_len: f64) -> Graph {
+    let n = graph.nodes.len();
+    let mut active: Vec<bool> = vec![true; graph.edges.len()];
+
+    let edge_len = |i: usize| -> f64 {
+        let (a, b) = graph.edges[i];
+        let (ax, ay) = graph.nodes[a];
+        let (bx, by) = graph.nodes[b];
+        ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt()
+    };
+
+    loop {
+        // Recompute degree from active edges each iteration.
+        let mut deg: Vec<usize> = vec![0; n];
+        for (i, &(a, b)) in graph.edges.iter().enumerate() {
+            if active[i] {
+                deg[a] += 1;
+                deg[b] += 1;
+            }
+        }
+
+        let mut changed = false;
+
+        for start in 0..n {
+            if deg[start] != 1 {
+                continue;
+            }
+            // Walk the tip from `start` through degree-2 nodes to junction.
+            let mut path_edges: Vec<usize> = Vec::new();
+            let mut arc = 0.0;
+            let mut prev = usize::MAX; // sentinel: no previous node yet
+            let mut cur = start;
+
+            loop {
+                // Find the one active neighbor of `cur` that isn't `prev`.
+                let next = graph.edges.iter().enumerate().find(|&(i, &(a, b))| {
+                    active[i] && ((a == cur && b != prev) || (b == cur && a != prev))
+                });
+                let (ei, &(ea, eb)) = match next {
+                    Some(x) => x,
+                    None => break,
+                };
+                path_edges.push(ei);
+                arc += edge_len(ei);
+                let nb = if ea == cur { eb } else { ea };
+                if deg[nb] != 2 {
+                    break; // reached junction or isolated end
+                }
+                prev = cur;
+                cur = nb;
+            }
+
+            if !path_edges.is_empty() && arc < min_tip_len {
+                for ei in path_edges {
+                    active[ei] = false;
+                }
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    let new_edges = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| active[*i])
+        .map(|(_, &e)| e)
+        .collect();
+
+    Graph { nodes: graph.nodes.clone(), edges: new_edges }
 }
 
 /// Extract maximal non-branching chains (polylines) from the graph.
@@ -119,6 +204,8 @@ pub fn extract_chains(graph: &Graph) -> Vec<Chain> {
                 pts: path.iter().map(|&i| nodes[i]).collect(),
                 start_terminal,
                 end_terminal,
+                start_node: start,
+                end_node: cur,
             })
         };
 

@@ -1,6 +1,40 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
+
+
+@dataclass
+class TopologizeResult:
+    """Result of :func:`topologize`.
+
+    Attributes
+    ----------
+    chains : list of (M, 2) numpy arrays
+        Maximal non-branching centerline segments.
+    nodes : (K, 2) numpy array
+        Unique chain-endpoint positions.
+    chain_node_ids : list of (start_id, end_id) tuples
+        Indices into ``nodes`` for each chain's endpoints.
+    """
+
+    chains: list[np.ndarray]
+    nodes: np.ndarray
+    chain_node_ids: list[tuple[int, int]]
+
+    @property
+    def node_degree(self) -> np.ndarray:
+        """(K,) integer array — number of chains incident on each node."""
+        degree = np.zeros(len(self.nodes), dtype=int)
+        for s, e in self.chain_node_ids:
+            degree[s] += 1
+            degree[e] += 1
+        return degree
+
+    def chains_at_node(self, node_id: int) -> list[int]:
+        """Return indices of chains whose start or end node is *node_id*."""
+        return [i for i, (s, e) in enumerate(self.chain_node_ids) if s == node_id or e == node_id]
 
 
 def topologize(
@@ -8,7 +42,8 @@ def topologize(
     buffer_distance: float,
     *,
     simplification: float | None = None,
-) -> list[np.ndarray]:
+    min_tip_length: float | None = None,
+) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
 
@@ -26,20 +61,33 @@ def topologize(
         RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
         (in input units), applied after projection smoothing.
         Larger values produce fewer output points; 0.0 disables.
+    min_tip_length : float or None, default None (= buffer_distance * 2)
+        Terminal chains shorter than this are pruned before chain extraction.
+        Set to 0.0 to disable pruning.
 
     Returns
     -------
-    list of (M, 2) numpy arrays, one per continuous non-branching segment.
+    TopologizeResult
+        ``.chains``        — list of (M, 2) arrays, one per non-branching segment
+        ``.nodes``         — (K, 2) array of unique chain-endpoint positions
+        ``.chain_node_ids``— list of (start_id, end_id) per chain
     """
     from topologize._internal import topologize as _topologize
 
     kwargs = {}
     if simplification is not None:
         kwargs["simplification"] = float(simplification)
+    if min_tip_length is not None:
+        kwargs["min_tip_length"] = float(min_tip_length)
 
-    raw = _topologize(
+    raw_chains, raw_nodes, raw_chain_node_ids = _topologize(
         [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
         buffer_distance,
         **kwargs,
     )
-    return [np.array(chain) for chain in raw]
+
+    chains = [np.array(chain) for chain in raw_chains]
+    nodes = np.array(raw_nodes).reshape(-1, 2)
+    chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
+
+    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
