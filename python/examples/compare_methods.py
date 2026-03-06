@@ -1,14 +1,11 @@
 # %%
 """
-Compare midpoint, voronoi, and python centerline methods on the same input geometry.
-
-Legend entries: input, buffer, midpoint, voronoi, python
+Midpoint centerline method on sample geometry.
 
 Usage:
     uv run python/examples/compare_methods.py
 """
 import subprocess
-import sys
 import tempfile
 
 import numpy as np
@@ -40,19 +37,11 @@ star_pts = np.vstack([_star_open, _star_open[:1]])
 curves = [p_pts, p2_pts, circle_pts, star_pts]
 buffer_distance = 0.6
 
-# %% --- run all three methods ---
+# %% --- run ---
 
-chains_midpoint = topologize(curves, buffer_distance, method="midpoint")
-chains_voronoi  = topologize(curves, buffer_distance, method="voronoi")
-
-# python method (shapely + triangle CDT, same algorithm as prototype.py)
-sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
-from examples.prototype import extract_centerline_python  # noqa: E402
-chains_python = extract_centerline_python(curves, buffer_distance)
+chains_midpoint = topologize(curves, buffer_distance)
 
 print(f"midpoint : {len(chains_midpoint)} chains")
-print(f"voronoi  : {len(chains_voronoi)} chains")
-print(f"python   : {len(chains_python)} chains")
 
 # %% --- build NaN-separated arrays ---
 
@@ -66,8 +55,6 @@ def nan_stack(chains):
 
 
 mid_pts = nan_stack(chains_midpoint)
-vor_pts = nan_stack(chains_voronoi)
-py_pts  = nan_stack(chains_python)
 
 # input strokes
 input_pts = np.concatenate([np.vstack([c, NAN]) for c in curves])
@@ -103,22 +90,11 @@ traces = [
         name="midpoint",
         line=dict(color="#e41a1c", width=2),
     ),
-    go.Scatter(
-        x=vor_pts[:, 0], y=vor_pts[:, 1], mode="lines",
-        name="voronoi",
-        line=dict(color="#377eb8", width=2),
-    ),
-    go.Scatter(
-        x=py_pts[:, 0], y=py_pts[:, 1], mode="lines",
-        name="python",
-        line=dict(color="#4daf4a", width=2, dash="dash"),
-    ),
 ]
 
 fig = go.Figure(traces)
 fig.update_layout(
-    title=f"Centerline comparison — buf={buffer_distance} | "
-          f"midpoint={len(chains_midpoint)} voronoi={len(chains_voronoi)} python={len(chains_python)} chains",
+    title=f"Centerline — buf={buffer_distance} | midpoint={len(chains_midpoint)} chains",
     yaxis_scaleanchor="x",
     width=1100,
     height=700,

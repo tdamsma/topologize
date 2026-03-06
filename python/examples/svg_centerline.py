@@ -2,12 +2,7 @@
 """
 SVG centerline extraction example.
 
-Runs three skeletonization methods side-by-side and plots them as single
-colour-coded layers on one figure:
-  - input strokes (light gray, wide)
-  - python  — shapely + triangle prototype
-  - midpoint — Rust CDT midpoint skeleton
-  - voronoi  — Rust Boost Voronoi skeleton
+Extracts the centerline skeleton from an SVG file and plots it.
 
 Usage:
     uv run python/examples/svg_centerline.py python/examples/data/input.svg --buffer 10
@@ -59,9 +54,7 @@ def plot(curves, results, buffer_distance):
 
     NAN = np.full((1, 2), np.nan)
     METHOD_COLORS = {
-        "python":   "#377eb8",
         "midpoint": "#e41a1c",
-        "voronoi":  "#4daf4a",
     }
 
     traces = []
@@ -127,25 +120,7 @@ def main():
 
     buf = args.buffer
     results = {}
-
-    # Python prototype (shapely + triangle)
-    try:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).parent))
-        from prototype import extract_centerline_python
-        results["python"] = _run("python", lambda: extract_centerline_python(curves, buf))
-    except ImportError as e:
-        print(f"  python method unavailable ({e})")
-
-    # Rust midpoint
-    results["midpoint"] = _run("midpoint", lambda: topologize(curves, buf, method="midpoint"))
-
-    # Rust voronoi
-    try:
-        results["voronoi"] = _run("voronoi", lambda: topologize(curves, buf, method="voronoi"))
-    except BaseException as e:
-        print(f"  voronoi: failed ({type(e).__name__}: {e})")
-
+    results["midpoint"] = _run("midpoint", lambda: topologize(curves, buf))
     plot(curves, results, buf)
 
 

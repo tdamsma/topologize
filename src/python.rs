@@ -2,7 +2,7 @@
 
 use pyo3::prelude::*;
 
-use crate::{graph, inflate, skeleton_cdt, skeleton_voronoi};
+use crate::{graph, inflate, skeleton_cdt};
 
 type Pt = (f64, f64);
 
@@ -170,38 +170,28 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 ///
 /// 1. Inflate all curves by `buffer_distance` and union them into polygons.
 /// 2. Simplify polygon boundary (RDP), then subdivide to cap edge length.
-/// 3. Skeletonize each polygon (midpoint CDT or Voronoi).
+/// 3. Skeletonize each polygon via constrained Delaunay triangulation midpoints.
 /// 4. Snap nearby endpoints and extract maximal non-branching chains.
-/// 5. Smooth (midpoint only) and RDP-simplify output chains.
+/// 5. Smooth and RDP-simplify output chains.
 ///
 /// Parameters
 /// ----------
 /// curves : list of lists of (x, y) tuples
 /// buffer_distance : float
-/// method : "midpoint" (default) | "voronoi"
-///     "midpoint" — constrained Delaunay triangulation via the `cdt` crate.
-///     "voronoi"  — Boost Voronoi diagram via the `centerline` crate.
-/// cos_angle : float, default 0.0
-///     Voronoi only. Cosine of the minimum acceptable angle between a Voronoi
-///     edge and the nearest input segment. 0.0 keeps all edges; values toward
-///     1.0 prune shallow-angle branches progressively.
 /// simplification : float, default None (= buffer_distance / 10)
-///     RDP tolerance applied to output polylines (in input units).
-///     For midpoint: applied after projection smoothing.
-///     For voronoi: applied internally by the skeletonizer.
-///     Larger values produce fewer output points; 0.0 disables.
+///     RDP tolerance applied to output polylines (in input units), applied
+///     after projection smoothing. Larger values produce fewer output points;
+///     0.0 disables.
 ///
 /// Returns
 /// -------
 /// list of lists of (x, y) tuples
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, method=None, cos_angle=0.0, simplification=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None))]
 pub fn topologize(
     _py: Python<'_>,
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
-    method: Option<&str>,
-    cos_angle: f64,
     simplification: Option<f64>,
 ) -> PyResult<Vec<Vec<Pt>>> {
     // Decimate dense input before inflate so clipper2 isn't fed millions of
@@ -235,7 +225,6 @@ pub fn topologize(
         .collect();
 
     let snap_tol = buffer_distance / 20.0;
-    let use_voronoi = matches!(method, Some("voronoi"));
     let rdp_tol = simplification.unwrap_or(buffer_distance / 10.0);
 
     let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
@@ -243,12 +232,7 @@ pub fn topologize(
         if outer.len() < 3 {
             continue;
         }
-        let segs = if use_voronoi {
-            skeleton_voronoi::voronoi_skeletonize(outer, holes, cos_angle, rdp_tol)
-        } else {
-            skeleton_cdt::skeletonize(outer, holes, buffer_distance)
-        };
-        all_segments.extend(segs);
+        all_segments.extend(skeleton_cdt::skeletonize(outer, holes, buffer_distance));
     }
 
     if all_segments.is_empty() {
@@ -257,11 +241,6 @@ pub fn topologize(
 
     let graph = graph::segments_to_graph(&all_segments, snap_tol);
     let chains = graph::extract_chains(&graph);
-
-    // Voronoi applies RDP internally; skip midpoint post-processing for it.
-    if use_voronoi {
-        return Ok(chains.into_iter().map(|c| c.pts).collect());
-    }
 
     let out: Vec<Vec<Pt>> = chains
         .into_iter()
