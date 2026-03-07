@@ -69,6 +69,14 @@ fn midpoint_segments(
         return vec![];
     }
 
+    // Break any accidental vertex-on-constraint-edge coincidences that arise
+    // from the subdivision step. A 1e-9 perturbation is invisible in the output.
+    for (i, pt) in all_pts.iter_mut().enumerate() {
+        let s = i as f64;
+        pt.0 += 1e-9 * (s * 1.1_f64).sin();
+        pt.1 += 1e-9 * (s * 1.3_f64).cos();
+    }
+
     // Triangulate. `triangulate_contours` returns only interior triangles.
     let triangles = match cdt::triangulate_contours(&all_pts, &contours) {
         Ok(t) => t,
