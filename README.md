@@ -69,7 +69,7 @@ result.chain_node_ids  # list of (start_id, end_id) per chain
 All examples are `# %%` cell-delimited Python files — run directly or open as Jupyter notebooks.
 
 ```bash
-# Interactive plot (requires plotly: uv add --dev plotly)
+# Interactive plot (requires dev dependencies: uv sync --group dev)
 uv run python/examples/svg_centerline.py python/examples/data/topologize.svg --buffer 0.47
 
 # Minimal getting-started notebook

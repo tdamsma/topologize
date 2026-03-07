@@ -8,7 +8,7 @@ Usage:
     uv run python/examples/svg_centerline.py python/examples/data/input.svg --buffer 10
 
 Requires plotly (dev dependency):
-    uv add --dev plotly
+    uv sync --group dev
 """
 import argparse
 import subprocess
@@ -163,7 +163,7 @@ def plot(curves, chains, buffer_distance, show_cdt=False):
     try:
         import plotly.graph_objects as go
     except ImportError:
-        print("plotly not installed — run: uv add --dev plotly")
+        print("plotly not installed — run: uv sync --group dev")
         sys.exit(1)
 
     NAN = np.full((1, 2), np.nan)
