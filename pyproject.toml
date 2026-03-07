@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "svg"]
 module-name = "topologize._internal"
 python-source = "python"
 

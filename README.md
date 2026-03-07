@@ -63,20 +63,6 @@ result.chain_node_ids  # list of (start_id, end_id) per chain
 | `buffer_distance` | `float` | Inflation radius. |
 | `simplification` | `float \| None` | RDP tolerance on output chains (default: `buffer_distance / 10`). Set to `0` to disable. |
 
-## SVG input
-
-The package includes a helper for reading SVG files directly:
-
-```python
-from topologize.helpers import load_svg
-from topologize import topologize
-
-curves = load_svg("path/to/file.svg")
-result = topologize(curves, buffer_distance=10.0)
-```
-
-SVG loading is backed by [`usvg`](https://github.com/RazrFalcon/resvg), which normalises all path commands (including arcs, smooth beziers, text converted to paths), resolves group transforms, and handles `use`/`symbol` elements.
-
 ## Examples
 
 All examples are `# %%` cell-delimited Python files — run directly or open as Jupyter notebooks.
@@ -117,26 +103,16 @@ src/
   inflate.rs         Clipper2-based polygon inflation + boundary prep
   skeleton_cdt.rs    CDT midpoint-graph skeletonizer
   graph.rs           Endpoint snapping + chain extraction
-  svg_loader.rs      usvg-backed SVG loader (exposed as _internal.load_svg)
 
 python/
   topologize/
     __init__.py      Public API (TopologizeResult, topologize, inflate, triangulate)
-    helpers/
-      __init__.py    load_svg — wraps the Rust usvg loader
   examples/
     getting_started.py
     svg_centerline.py
-    compare_methods.py
 
 tests/
   test_topologize.py
-
-scripts/
-  topologize_svg.py  CLI: process an SVG, print summary
-
-benchmarks/
-  run_all.py         Benchmark runner
 
 Cargo.toml           Rust manifest
 pyproject.toml       Python build config (maturin)

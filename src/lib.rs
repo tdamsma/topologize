@@ -4,6 +4,7 @@ mod graph;
 mod inflate;
 mod python;
 mod skeleton_cdt;
+#[cfg(feature = "svg")]
 mod svg_loader;
 
 use pyo3::prelude::*;
@@ -14,6 +15,7 @@ fn _internal(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(python::inflate_curves, m)?)?;
     m.add_function(wrap_pyfunction!(python::triangulate_curves, m)?)?;
     m.add_function(wrap_pyfunction!(python::topologize, m)?)?;
+    #[cfg(feature = "svg")]
     m.add_function(wrap_pyfunction!(svg_loader::load_svg, m)?)?;
     Ok(())
 }
