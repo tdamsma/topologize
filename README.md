@@ -4,7 +4,7 @@
 
 Given a set of curves — open or closed, possibly intersecting or bundled — `topologize` inflates them into a region, skeletonizes that region via constrained Delaunay triangulation, and returns a list of maximal non-branching polylines tracing the medial axis.
 
-![Before and after on synthetic geometry](docs/example_simple.png)
+![Before and after on topologize.svg](docs/example_topologize.png)
 
 ## What it does
 
@@ -18,12 +18,13 @@ The output chains share junction points, so the result is a proper topological g
 
 ## When to use it
 
-- Redundant or parallel strokes that should resolve to a single path (scanned drawings, vector artwork cleaned up manually, multi-pass traces)
-- GPS or sensor traces where the same route was recorded multiple times
-- Road / river / network centerline extraction from buffered polygon data
-- Any situation where you have *geometry that approximates a graph* and need *an actual graph*
+Use `topologize` when you have *geometry that approximates a graph* and need *an actual graph* — a set of polylines with shared junction points you can traverse, measure, or match to other data.
 
-![Before and after on SVG input](docs/example_svg.png)
+Concrete examples:
+
+- Vector artwork or scanned drawings converted to machine toolpaths (laser, pen plotter, CNC, printing)
+- Road, river, or network centerline extraction from polygon or buffered line data
+- GPS or sensor traces where the same route was recorded multiple times
 
 ## Installation
 
@@ -69,7 +70,7 @@ All examples are `# %%` cell-delimited Python files — run directly or open as 
 
 ```bash
 # Interactive plot (requires plotly: uv add --dev plotly)
-uv run python/examples/svg_centerline.py python/examples/data/a-mess.svg --buffer 3
+uv run python/examples/svg_centerline.py python/examples/data/topologize.svg --buffer 0.47
 
 # Minimal getting-started notebook
 uv run python/examples/getting_started.py
