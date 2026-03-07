@@ -46,8 +46,15 @@ pub fn inflate(curves: &[Vec<Pt>], buffer_distance: f64) -> Vec<(Vec<Pt>, Vec<Ve
     let mut outers: Vec<(Vec<Pt>, f64, f64)> = Vec::new(); // (ring, perimeter, area)
     let mut all_holes: Vec<(Vec<Pt>, f64)> = Vec::new(); // (ring, area)
 
+    // Holes smaller than this are degenerate artifacts (e.g. from coarse
+    // input sampling) and would cause CDT to fail.
+    let min_hole_area = buffer_distance * buffer_distance * 0.1;
+
     for path in &union_result {
-        let pts: Vec<Pt> = path.iter().map(|p| (p.x, p.y)).collect();
+        let pts = dedup_ring(path.iter().map(|p| (p.x, p.y)).collect());
+        if pts.len() < 3 {
+            continue;
+        }
         let a = area(path);
         if a > 0.0 {
             let perim: f64 = pts
@@ -59,7 +66,7 @@ pub fn inflate(curves: &[Vec<Pt>], buffer_distance: f64) -> Vec<(Vec<Pt>, Vec<Ve
                 })
                 .sum();
             outers.push((pts, perim, a));
-        } else {
+        } else if -a >= min_hole_area {
             all_holes.push((pts, -a)); // store positive area
         }
     }
@@ -103,6 +110,25 @@ pub fn inflate(curves: &[Vec<Pt>], buffer_distance: f64) -> Vec<(Vec<Pt>, Vec<Ve
     }
 
     result
+}
+
+/// Remove consecutive duplicate (or near-duplicate) points from a ring.
+/// Zero-length edges cause CDT to fail.
+fn dedup_ring(pts: Vec<Pt>) -> Vec<Pt> {
+    if pts.len() < 2 {
+        return pts;
+    }
+    let mut out: Vec<Pt> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if out.last().map_or(true, |&last| {
+            let dx = p.0 - last.0;
+            let dy = p.1 - last.1;
+            dx * dx + dy * dy > 1e-10
+        }) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn point_inside_ring((px, py): Pt, poly: &[Pt]) -> bool {

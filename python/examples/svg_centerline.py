@@ -151,7 +151,7 @@ def main():
         sys.exit(1)
 
     t0 = time.perf_counter()
-    curves = load_svg(str(svg_path))
+    curves = load_svg(str(svg_path), sample_distance=args.buffer / 2)
     print(f"Loaded {svg_path}: {len(curves)} curves, "
           f"{sum(len(c) for c in curves)} pts  "
           f"{(time.perf_counter()-t0)*1000:.0f} ms")
