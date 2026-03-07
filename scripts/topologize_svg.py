@@ -12,7 +12,7 @@ def load_svg(path, sample_distance=5.0):
     try:
         from svgpathtools import svg2paths2
     except ImportError:
-        print("svgpathtools not installed — run: uv add --dev svgpathtools")
+        print("svgpathtools not installed — run: uv sync")
         sys.exit(1)
     paths, *_ = svg2paths2(path)
     curves = []
