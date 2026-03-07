@@ -821,6 +821,11 @@ dependencies = [
     { name = "numpy" },
 ]
 
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "kaleido" },
@@ -830,7 +835,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy" }]
+requires-dist = [
+    { name = "numpy" },
+    { name = "pytest", marker = "extra == 'test'" },
+]
+provides-extras = ["test"]
 
 [package.metadata.requires-dev]
 dev = [
