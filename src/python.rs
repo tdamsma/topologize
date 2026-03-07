@@ -187,7 +187,7 @@ pub fn triangulate_curves(
         let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
         let holes: Vec<Vec<Pt>> = holes
             .iter()
-            .map(|h| subdivide_ring(&rdp(h, rdp_boundary), max_seg))
+            .map(|h| subdivide_ring(h, max_seg))
             .collect();
         if outer.len() >= 3 {
             out.extend(skeleton_cdt::get_triangles(&outer, &holes));
@@ -275,9 +275,11 @@ pub fn topologize(
         .into_iter()
         .map(|(outer, holes)| {
             let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+            // Don't RDP-simplify holes: closely-spaced holes can develop
+            // crossing constraints after simplification, causing CDT to fail.
             let holes = holes
                 .iter()
-                .map(|h| subdivide_ring(&rdp(h, rdp_boundary), max_seg))
+                .map(|h| subdivide_ring(h, max_seg))
                 .collect();
             (outer, holes)
         })
