@@ -51,7 +51,7 @@ def plot(curves, chains, buffer_distance, title=""):
 p1 = np.array([[0.0, 2.0], [10.0, 0.0], [5.0, 0.1], [5.0, 5.0]])
 
 # open polyline resampled to 24 points
-import shapely
+import shapely  # noqa: E402
 _p2 = shapely.LineString([[0, 6], [1, 4], [2, 0]])
 p2 = np.array(
     shapely.LineString(

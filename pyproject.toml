@@ -10,6 +10,9 @@ dependencies = [
     "numpy",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "topologize._internal"

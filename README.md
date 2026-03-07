@@ -76,21 +76,6 @@ uv run python/examples/svg_centerline.py python/examples/data/topologize.svg --b
 uv run python/examples/getting_started.py
 ```
 
-## Benchmarks
-
-```bash
-uv run python benchmarks/run_all.py
-```
-
-On the included SVG dataset (~20 curves, 16 000 points) at `buffer_distance=20`:
-
-| Stage | Time |
-|---|---|
-| Inflate (Clipper2) | ~5 ms |
-| Skeletonize (CDT) | ~11 ms |
-| Extract chains | ~1 ms |
-| **Total** | **~17 ms** |
-
 ## Algorithm
 
 See [algorithm.md](algorithm.md) for a detailed description of all three pipeline stages, the boundary preprocessing steps (RDP simplification + subdivision), the post-processing applied to output chains (projection smoothing, endpoint straightening, RDP), and the rationale for the CDT midpoint approach over alternatives (Voronoi, Python prototype).
