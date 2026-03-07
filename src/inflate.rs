@@ -43,37 +43,61 @@ pub fn inflate(curves: &[Vec<Pt>], buffer_distance: f64) -> Vec<(Vec<Pt>, Vec<Ve
     let union_result = union_subjects_d(&all_inflated, FillRule::NonZero, 6);
 
     // Separate outers (positive shoelace area) from holes (negative).
-    let mut outers: Vec<Vec<Pt>> = Vec::new();
-    let mut all_holes: Vec<Vec<Pt>> = Vec::new();
+    let mut outers: Vec<(Vec<Pt>, f64, f64)> = Vec::new(); // (ring, perimeter, area)
+    let mut all_holes: Vec<(Vec<Pt>, f64)> = Vec::new(); // (ring, area)
 
     for path in &union_result {
         let pts: Vec<Pt> = path.iter().map(|p| (p.x, p.y)).collect();
-        if area(path) > 0.0 {
-            outers.push(pts);
+        let a = area(path);
+        if a > 0.0 {
+            let perim: f64 = pts
+                .windows(2)
+                .map(|w| {
+                    let dx = w[1].0 - w[0].0;
+                    let dy = w[1].1 - w[0].1;
+                    (dx * dx + dy * dy).sqrt()
+                })
+                .sum();
+            outers.push((pts, perim, a));
         } else {
-            all_holes.push(pts);
+            all_holes.push((pts, -a)); // store positive area
         }
     }
 
-    // Assign each hole to the outer ring that contains it (centroid test).
+    // Sort outers by perimeter ascending so the smallest enclosing outer
+    // claims each hole first. This correctly handles nested outer rings and
+    // ensures each hole is assigned to exactly one (the tightest) outer.
+    outers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let outer_areas: Vec<f64> = outers.iter().map(|(_, _, a)| *a).collect();
     let mut result: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> =
-        outers.iter().map(|o| (o.clone(), Vec::new())).collect();
+        outers.into_iter().map(|(o, _, _)| (o, Vec::new())).collect();
 
-    for hole in all_holes {
-        if hole.is_empty() {
-            continue;
-        }
-        let cx = hole.iter().map(|p| p.0).sum::<f64>() / hole.len() as f64;
-        let cy = hole.iter().map(|p| p.1).sum::<f64>() / hole.len() as f64;
+    // Each hole is claimed by the smallest enclosing outer and removed from
+    // the pool, so it is never double-assigned across disjoint regions.
+    // A hole whose area exceeds the outer's area cannot be inside it.
+    let mut remaining: Vec<Option<(Vec<Pt>, f64)>> =
+        all_holes.into_iter().map(Some).collect();
 
-        if result.len() == 1 {
-            result[0].1.push(hole);
-        } else {
-            let owner = result
-                .iter()
-                .position(|(outer, _)| point_inside_ring((cx, cy), outer));
-            if let Some(idx) = owner {
-                result[idx].1.push(hole);
+    for (idx, (outer, holes_out)) in result.iter_mut().enumerate() {
+        let outer_area = outer_areas[idx];
+        for i in 0..remaining.len() {
+            let centroid = match &remaining[i] {
+                None => continue,
+                Some((hole, _)) if hole.is_empty() => {
+                    remaining[i] = None;
+                    continue;
+                }
+                Some((hole, hole_area)) => {
+                    if *hole_area >= outer_area {
+                        continue; // hole larger than outer — impossible containment
+                    }
+                    hole[0] // contours from union never overlap: one point suffices
+                }
+            };
+            if point_inside_ring(centroid, outer) {
+                let (hole, _) = remaining[i].take().unwrap();
+                holes_out.push(hole);
             }
         }
     }

@@ -37,6 +37,59 @@ class TopologizeResult:
         return [i for i, (s, e) in enumerate(self.chain_node_ids) if s == node_id or e == node_id]
 
 
+def triangulate(
+    curves: list[np.ndarray],
+    buffer_distance: float,
+) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
+    """
+    Return the CDT triangles used internally by :func:`topologize`.
+
+    Applies the same boundary preprocessing (RDP + subdivision) as the main
+    pipeline. Useful for visualising and debugging the triangulation step.
+
+    Parameters
+    ----------
+    curves : list of (N, 2) numpy arrays
+    buffer_distance : float
+
+    Returns
+    -------
+    list of ((x0,y0),(x1,y1),(x2,y2)) tuples — one per triangle.
+    """
+    from topologize._internal import triangulate_curves as _tri
+    return _tri(
+        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
+        buffer_distance,
+    )
+
+
+def inflate(
+    curves: list[np.ndarray],
+    buffer_distance: float,
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """
+    Inflate polylines and return the buffer polygons.
+
+    Parameters
+    ----------
+    curves : list of (N, 2) numpy arrays
+    buffer_distance : float
+
+    Returns
+    -------
+    list of (outer, holes) where:
+        outer : (N, 2) array — outer ring
+        holes : list of (M, 2) arrays — hole rings (may be empty)
+    """
+    from topologize._internal import inflate_curves as _inflate
+
+    raw = _inflate(
+        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
+        buffer_distance,
+    )
+    return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
+
+
 def topologize(
     curves: list[np.ndarray],
     buffer_distance: float,

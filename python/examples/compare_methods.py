@@ -39,7 +39,8 @@ buffer_distance = 0.6
 
 # %% --- run ---
 
-chains = topologize(curves, buffer_distance)
+result = topologize(curves, buffer_distance)
+chains = result.chains
 print(f"topologize: {len(chains)} chains, {sum(len(c) for c in chains)} pts")
 
 # %% --- build NaN-separated arrays ---

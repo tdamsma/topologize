@@ -166,6 +166,58 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
     result
 }
 
+/// Return the CDT triangles for each inflated polygon, using the same
+/// boundary preprocessing (RDP simplification + subdivision) as `topologize`.
+/// Useful for visualising and debugging the triangulation step.
+///
+/// Returns a flat list of triangles across all polygons, each as
+/// ((x0,y0),(x1,y1),(x2,y2)).
+#[pyfunction]
+pub fn triangulate_curves(
+    curves: Vec<Vec<Pt>>,
+    buffer_distance: f64,
+) -> Vec<(Pt, Pt, Pt)> {
+    let min_step = buffer_distance * 0.15;
+    let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
+    let polygons = inflate::inflate(&decimated, buffer_distance);
+    let rdp_boundary = buffer_distance * 0.15;
+    let max_seg = buffer_distance * 1.5;
+    let mut out = Vec::new();
+    for (outer, holes) in polygons {
+        let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+        let holes: Vec<Vec<Pt>> = holes
+            .iter()
+            .map(|h| subdivide_ring(&rdp(h, rdp_boundary), max_seg))
+            .collect();
+        if outer.len() >= 3 {
+            out.extend(skeleton_cdt::get_triangles(&outer, &holes));
+        }
+    }
+    out
+}
+
+/// Inflate a list of polylines by `buffer_distance`, union all results,
+/// and return the buffer polygons as (outer_ring, holes) pairs.
+///
+/// The same input decimation applied inside `topologize` is used here so
+/// the polygons match exactly what the skeleton sees.
+///
+/// Returns
+/// -------
+/// list of (outer, holes) where outer and each hole is a list of (x, y) tuples
+#[pyfunction]
+pub fn inflate_curves(
+    curves: Vec<Vec<Pt>>,
+    buffer_distance: f64,
+) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
+    let min_step = buffer_distance * 0.15;
+    let decimated: Vec<Vec<Pt>> = curves
+        .iter()
+        .map(|c| decimate_curve(c, min_step))
+        .collect();
+    inflate::inflate(&decimated, buffer_distance)
+}
+
 /// Topologize a list of polylines into clean centerline chains.
 ///
 /// 1. Inflate all curves by `buffer_distance` and union them into polygons.

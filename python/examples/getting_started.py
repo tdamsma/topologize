@@ -76,7 +76,8 @@ curves = [p1, p2, circle, star]
 
 # %%
 buffer_distance = 0.6
-chains = topologize(curves, buffer_distance)
+result = topologize(curves, buffer_distance)
+chains = result.chains
 print(f"{len(chains)} chains, {sum(len(c) for c in chains)} total points")
 plot(curves, chains, buffer_distance, title="Simple shapes")
 
@@ -89,7 +90,7 @@ plot(curves, chains, buffer_distance, title="Simple shapes")
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 for ax, bd in zip(axes, [0.3, 0.6, 1.2]):
-    ch = topologize(curves, bd)
+    ch = topologize(curves, bd).chains
     ax.set_aspect("equal")
     ax.set_title(f"buffer_distance={bd}  ({len(ch)} chains)")
     for c in curves:
@@ -111,7 +112,7 @@ line_b = np.column_stack([np.linspace(0, 10, 50), np.ones(50) * 0.8])
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 for ax, bd in zip(axes, [0.3, 0.6]):
-    ch = topologize([line_a, line_b], bd)
+    ch = topologize([line_a, line_b], bd).chains
     ax.set_aspect("equal")
     ax.set_title(f"buffer_distance={bd}  ({len(ch)} chain{'s' if len(ch) != 1 else ''})")
     for c in [line_a, line_b]:
@@ -127,7 +128,7 @@ plt.show()
 # Each chain is a plain `(N, 2)` numpy array — easy to work with downstream.
 
 # %%
-chains = topologize(curves, buffer_distance=0.6)
+chains = topologize(curves, buffer_distance=0.6).chains
 
 for i, chain in enumerate(chains):
     length = np.sum(np.linalg.norm(np.diff(chain, axis=0), axis=1))

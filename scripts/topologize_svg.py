@@ -15,7 +15,8 @@ def main():
     curves = load_svg(args.svg)
 
     t0 = time.perf_counter()
-    chains = topologize(curves, args.buffer)
+    result = topologize(curves, args.buffer)
+    chains = result.chains
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     print(f"input curves : {len(curves)}")

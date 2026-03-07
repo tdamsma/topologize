@@ -16,6 +16,33 @@ pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>], buffer_distance: f64) -> Vec
     midpoint_segments(outer, holes, buffer_distance, 1.5)
 }
 
+/// Return the raw CDT triangles as vertex triples, for debugging/visualisation.
+pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
+    let mut all_pts: Vec<Pt> = Vec::new();
+    let mut contours: Vec<Vec<usize>> = Vec::new();
+    for ring in std::iter::once(outer).chain(holes.iter().map(|h| h.as_slice())) {
+        if ring.len() < 3 {
+            continue;
+        }
+        let start = all_pts.len();
+        all_pts.extend_from_slice(ring);
+        let end = all_pts.len();
+        let mut contour: Vec<usize> = (start..end).collect();
+        contour.push(start);
+        contours.push(contour);
+    }
+    if all_pts.len() < 3 || contours.is_empty() {
+        return vec![];
+    }
+    match cdt::triangulate_contours(&all_pts, &contours) {
+        Ok(tris) => tris
+            .iter()
+            .map(|&(a, b, c)| (all_pts[a], all_pts[b], all_pts[c]))
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
 fn midpoint_segments(
     outer: &[Pt],
     holes: &[Vec<Pt>],

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from topologize import topologize
+from topologize import inflate, triangulate, topologize
 from topologize.helpers import load_svg
 
 # %%
@@ -32,7 +32,31 @@ def _chains_to_xy(chains):
     return pts[:, 0], pts[:, 1]
 
 
-def plot(curves, chains, buffer_distance):
+def _buffer_rings(curves, buffer_distance):
+    """Return NaN-separated (x, y) arrays for all buffer polygon rings."""
+    NAN = np.full((1, 2), np.nan)
+    polygons = inflate(curves, buffer_distance)
+    rings = [r for outer, holes in polygons for r in [outer, *holes]]
+    if not rings:
+        return None, None
+    buf_pts = np.concatenate([np.vstack([r, NAN]) for r in rings])
+    return buf_pts[:, 0], buf_pts[:, 1]
+
+
+def _triangles_to_xy(triangles):
+    """Convert list of (a, b, c) vertex tuples → NaN-separated closed loops."""
+    NAN = np.array([[np.nan, np.nan]])
+    parts = []
+    for (ax, ay), (bx, by), (cx, cy) in triangles:
+        parts.append(np.array([[ax, ay], [bx, by], [cx, cy], [ax, ay]]))
+        parts.append(NAN)
+    if not parts:
+        return None, None
+    pts = np.concatenate(parts)
+    return pts[:, 0], pts[:, 1]
+
+
+def plot(curves, chains, buffer_distance, show_cdt=False):
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -43,22 +67,41 @@ def plot(curves, chains, buffer_distance):
 
     input_pts = np.concatenate([np.vstack([c, NAN]) for c in curves])
     x, y = _chains_to_xy(chains)
+    bx, by = _buffer_rings(curves, buffer_distance)
 
-    fig = go.Figure([
+    traces = [
         go.Scatter(
             x=input_pts[:, 0], y=input_pts[:, 1], mode="lines",
             name="input",
             line=dict(color="rgba(180,180,180,0.6)", width=5),
         ),
-        go.Scatter(
-            x=x, y=y, mode="lines",
-            name="centerline",
-            line=dict(color="#e41a1c", width=1.5),
-        ),
-    ])
+    ]
+    if bx is not None:
+        traces.append(go.Scatter(
+            x=bx, y=by, mode="lines",
+            name="buffer",
+            line=dict(color="rgba(80,120,200,0.45)", width=1, dash="dot"),
+        ))
+    if show_cdt:
+        tris = triangulate(curves, buffer_distance)
+        tx, ty = _triangles_to_xy(tris)
+        if tx is not None:
+            traces.append(go.Scatter(
+                x=tx, y=ty, mode="lines",
+                name="CDT",
+                line=dict(color="rgba(0,160,80,0.35)", width=0.5),
+            ))
+    traces.append(go.Scatter(
+        x=x, y=y, mode="lines",
+        name="centerline",
+        line=dict(color="#e41a1c", width=1.5),
+    ))
+
+    fig = go.Figure(traces)
     fig.update_layout(
         title=f"Centerline — buf={buffer_distance}  |  {len(chains)} chains, {sum(len(c) for c in chains)} pts",
         yaxis_scaleanchor="x",
+        yaxis_autorange="reversed",
         width=1200,
         height=750,
         margin=dict(l=20, r=20, t=50, b=20),
@@ -74,6 +117,7 @@ def main():
     parser = argparse.ArgumentParser(description="SVG centerline extraction.")
     parser.add_argument("svg", nargs="?", help="Path to input SVG file")
     parser.add_argument("--buffer", type=float, default=20.0, help="Buffer distance (default: 20)")
+    parser.add_argument("--cdt", action="store_true", help="Overlay the CDT triangulation")
     args = parser.parse_args()
 
     if not args.svg:
@@ -92,11 +136,12 @@ def main():
           f"{(time.perf_counter()-t0)*1000:.0f} ms")
 
     t0 = time.perf_counter()
-    chains = topologize(curves, args.buffer)
+    result = topologize(curves, args.buffer)
+    chains = result.chains
     ms = (time.perf_counter() - t0) * 1000
     print(f"topologize: {len(chains)} chains, {sum(len(c) for c in chains)} pts  {ms:.0f} ms")
 
-    plot(curves, chains, args.buffer)
+    plot(curves, chains, args.buffer, show_cdt=args.cdt)
 
 
 # %%

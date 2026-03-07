@@ -49,8 +49,10 @@ curves = [
     np.array([[0.1, 0.1], [9.9, 0.1], [5.1, 4.9]]),  # near-duplicate stroke
 ]
 
-chains = topologize(curves, buffer_distance=0.5)
-# → list of (M, 2) numpy arrays, one per non-branching segment
+result = topologize(curves, buffer_distance=0.5)
+result.chains          # list of (M, 2) arrays — one per non-branching segment
+result.nodes           # (K, 2) array of unique junction/endpoint positions
+result.chain_node_ids  # list of (start_id, end_id) per chain
 ```
 
 `buffer_distance` is the single tuning parameter. Use roughly **half the typical gap between nearby strokes** — small enough to keep distinct paths separate, large enough to merge strokes that belong together.
@@ -70,10 +72,10 @@ from topologize.helpers import load_svg
 from topologize import topologize
 
 curves = load_svg("path/to/file.svg")
-chains = topologize(curves, buffer_distance=10.0)
+result = topologize(curves, buffer_distance=10.0)
 ```
 
-The SVG parser handles nested groups, transforms (`matrix`, `translate`, `scale`), and path commands `M L H V Q C Z` (absolute and relative). Béziers are discretised at a fixed sample distance.
+SVG loading is backed by [`usvg`](https://github.com/RazrFalcon/resvg), which normalises all path commands (including arcs, smooth beziers, text converted to paths), resolves group transforms, and handles `use`/`symbol` elements.
 
 ## Examples
 
@@ -81,7 +83,7 @@ All examples are `# %%` cell-delimited Python files — run directly or open as 
 
 ```bash
 # Interactive plot (requires plotly: uv add --dev plotly)
-uv run python/examples/svg_centerline.py python/examples/data/input.svg --buffer 20
+uv run python/examples/svg_centerline.py python/examples/data/a-mess.svg --buffer 3
 
 # Minimal getting-started notebook
 uv run python/examples/getting_started.py
@@ -115,16 +117,20 @@ src/
   inflate.rs         Clipper2-based polygon inflation + boundary prep
   skeleton_cdt.rs    CDT midpoint-graph skeletonizer
   graph.rs           Endpoint snapping + chain extraction
+  svg_loader.rs      usvg-backed SVG loader (exposed as _internal.load_svg)
 
 python/
   topologize/
-    __init__.py      Public API
+    __init__.py      Public API (TopologizeResult, topologize, inflate, triangulate)
     helpers/
-      svg_parser.py  SVG file parser
+      __init__.py    load_svg — wraps the Rust usvg loader
   examples/
     getting_started.py
     svg_centerline.py
     compare_methods.py
+
+tests/
+  test_topologize.py
 
 scripts/
   topologize_svg.py  CLI: process an SVG, print summary
