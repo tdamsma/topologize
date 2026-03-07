@@ -20,7 +20,28 @@ from pathlib import Path
 import numpy as np
 
 from topologize import inflate, triangulate, topologize
-from topologize.helpers import load_svg
+
+
+def load_svg(path, sample_distance=5.0):
+    try:
+        from svgpathtools import svg2paths2
+    except ImportError:
+        print("svgpathtools not installed — run: uv add --dev svgpathtools")
+        sys.exit(1)
+    paths, *_ = svg2paths2(path)
+    curves = []
+    for svg_path in paths:
+        for subpath in svg_path.continuous_subpaths():
+            pts = []
+            for seg in subpath:
+                n = max(1, int(seg.length() / sample_distance))
+                if not pts:
+                    pts.append(seg.point(0))
+                for i in range(1, n + 1):
+                    pts.append(seg.point(i / n))
+            if len(pts) >= 2:
+                curves.append(np.array([(p.real, p.imag) for p in pts]))
+    return curves
 
 # %%
 

@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module", "svg"]
+features = ["pyo3/extension-module"]
 module-name = "topologize._internal"
 python-source = "python"
 
@@ -20,4 +20,5 @@ dev = [
     "kaleido>=1.2.0",
     "matplotlib>=3.10.8",
     "pytest>=9.0.2",
+    "svgpathtools>=1.7.2",
 ]
