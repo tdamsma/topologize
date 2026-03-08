@@ -4,7 +4,7 @@
 
 Given a set of curves — open or closed, possibly intersecting or bundled — `topologize` inflates them into a region, skeletonizes that region via constrained Delaunay triangulation, and returns a list of maximal non-branching polylines tracing the medial axis.
 
-![Before and after on topologize.svg](docs/example_topologize.png)
+![Before and after on topologize.svg](https://raw.githubusercontent.com/tdamsma/topologize/main/docs/example_topologize.png)
 
 ## What it does
 
