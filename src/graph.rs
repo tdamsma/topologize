@@ -152,6 +152,172 @@ pub fn prune_short_tips(graph: &Graph, min_tip_len: f64) -> Graph {
     Graph { nodes: graph.nodes.clone(), edges: new_edges }
 }
 
+/// Contract short edges between junction nodes (degree ≥ 3).
+///
+/// When two lines cross at a steep angle, the CDT skeleton produces two
+/// degree-3 T-junctions connected by a short edge rather than one degree-4
+/// X-junction. This function merges such close pairs into a single node at
+/// their midpoint, repeating until no qualifying edge remains.
+///
+/// `max_dist` is the contraction threshold. A good default is
+/// `1.5 × buffer_distance`, which handles crossings above ~50°.
+/// Pass `max_dist = 0.0` to disable merging entirely.
+pub fn merge_close_junctions(graph: &Graph, max_dist: f64) -> Graph {
+    fn root(parent: &[usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            x = parent[x];
+        }
+        x
+    }
+
+    let n = graph.nodes.len();
+
+    // Build adjacency list.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(a, b) in &graph.edges {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let deg: Vec<usize> = adj.iter().map(|nb| nb.len()).collect();
+
+    // Find all short chains between two junction nodes.
+    // A junction-junction chain is a maximal path j1 — d2 — d2 — … — j2
+    // where all interior nodes have degree 2. We measure arc length (sum of
+    // edge lengths along the path) and keep chains within max_dist.
+    let mut candidates: Vec<(f64, usize, usize, Vec<usize>)> = Vec::new(); // (arc, j1, j2, all_path_nodes)
+    let mut visited_pairs: HashSet<(usize, usize)> = HashSet::new();
+
+    for start in 0..n {
+        if deg[start] < 3 {
+            continue;
+        }
+        for &next in &adj[start] {
+            // Walk from start through degree-2 nodes to the far end.
+            let mut path = vec![start];
+            let mut arc = 0.0;
+            let mut prev = start;
+            let mut cur = next;
+
+            loop {
+                let (px, py) = graph.nodes[prev];
+                let (cx, cy) = graph.nodes[cur];
+                arc += ((cx - px).powi(2) + (cy - py).powi(2)).sqrt();
+                path.push(cur);
+                if deg[cur] != 2 {
+                    break;
+                }
+                let nb = adj[cur].iter().find(|&&nb| nb != prev).copied();
+                match nb {
+                    Some(nb) => { prev = cur; cur = nb; }
+                    None => break,
+                }
+            }
+
+            let end = *path.last().unwrap();
+            if deg[end] >= 3 && arc <= max_dist {
+                let key = (start.min(end), start.max(end));
+                if visited_pairs.insert(key) {
+                    candidates.push((arc, start, end, path));
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        // No candidates: rebuild compact graph (drop isolated nodes) and return.
+        let mut used: HashSet<usize> = HashSet::new();
+        for &(a, b) in &graph.edges {
+            used.insert(a);
+            used.insert(b);
+        }
+        let mut sorted_used: Vec<usize> = used.into_iter().collect();
+        sorted_used.sort_unstable();
+        let compact: HashMap<usize, usize> =
+            sorted_used.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+        let new_nodes: Vec<Pt> = sorted_used.iter().map(|&i| graph.nodes[i]).collect();
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        let new_edges: Vec<(usize, usize)> = graph
+            .edges
+            .iter()
+            .filter_map(|&(a, b)| {
+                let na = compact[&a];
+                let nb = compact[&b];
+                let key = (na.min(nb), na.max(nb));
+                if seen.insert(key) { Some((na, nb)) } else { None }
+            })
+            .collect();
+        return Graph { nodes: new_nodes, edges: new_edges };
+    }
+
+    // Sort by arc length; greedily merge.
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut pos: Vec<Pt> = graph.nodes.clone();
+    // Nodes marked dead are removed (bridge interior + merged-away junction).
+    let mut dead: Vec<bool> = vec![false; n];
+
+    for (_, j1, j2, path) in &candidates {
+        let rj1 = root(&parent, *j1);
+        let rj2 = root(&parent, *j2);
+        if rj1 == rj2 {
+            continue; // already merged
+        }
+        // Merge rj2 into rj1 at their midpoint.
+        let (ax, ay) = pos[rj1];
+        let (bx, by) = pos[rj2];
+        pos[rj1] = ((ax + bx) / 2.0, (ay + by) / 2.0);
+        parent[rj2] = rj1;
+        // Kill all interior degree-2 nodes along the bridge path.
+        for &node in path.iter().skip(1).take(path.len().saturating_sub(2)) {
+            dead[node] = true;
+        }
+    }
+
+    // Rebuild compact graph: exclude dead nodes and edges touching them.
+    let mut used: HashSet<usize> = HashSet::new();
+    for &(a, b) in &graph.edges {
+        if dead[a] || dead[b] {
+            continue; // drop bridge edges
+        }
+        used.insert(root(&parent, a));
+        used.insert(root(&parent, b));
+    }
+
+    let mut sorted_used: Vec<usize> = used.into_iter().collect();
+    sorted_used.sort_unstable();
+
+    let compact: HashMap<usize, usize> = sorted_used
+        .iter()
+        .enumerate()
+        .map(|(new_id, &old_id)| (old_id, new_id))
+        .collect();
+
+    let new_nodes: Vec<Pt> = sorted_used.iter().map(|&i| pos[i]).collect();
+
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let new_edges: Vec<(usize, usize)> = graph
+        .edges
+        .iter()
+        .filter_map(|&(a, b)| {
+            if dead[a] || dead[b] {
+                return None;
+            }
+            let ra = root(&parent, a);
+            let rb = root(&parent, b);
+            if ra == rb {
+                return None;
+            }
+            let na = compact[&ra];
+            let nb = compact[&rb];
+            let key = (na.min(nb), na.max(nb));
+            if seen.insert(key) { Some((na, nb)) } else { None }
+        })
+        .collect();
+
+    Graph { nodes: new_nodes, edges: new_edges }
+}
+
 /// Extract maximal non-branching chains (polylines) from the graph.
 /// Mirrors the Python _extract_chains() logic.
 pub fn extract_chains(graph: &Graph) -> Vec<Chain> {

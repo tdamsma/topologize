@@ -221,6 +221,8 @@ def main():
     parser.add_argument("svg", nargs="?", help="Path to input SVG file")
     parser.add_argument("--buffer", type=float, default=20.0, help="Buffer distance (default: 20)")
     parser.add_argument("--cdt", action="store_true", help="Overlay the CDT triangulation")
+    parser.add_argument("--junction-merge-fraction", type=float, default=None,
+                        help="Junction merge fraction (default: 1.5; set 0 to disable)")
     args = parser.parse_args()
 
     if not args.svg:
@@ -233,7 +235,7 @@ def main():
         sys.exit(1)
 
     t0 = time.perf_counter()
-    curves = load_svg(str(svg_path), sample_distance=args.buffer / 2)
+    curves = load_svg(str(svg_path), sample_distance=args.buffer / 5)
     print(f"Loaded {svg_path}: {len(curves)} curves, "
           f"{sum(len(c) for c in curves)} pts  "
           f"{(time.perf_counter()-t0)*1000:.0f} ms")
@@ -243,7 +245,10 @@ def main():
     print(f"inflate: {len(polygons)} exterior rings, {n_holes} interior rings")
 
     t0 = time.perf_counter()
-    result = topologize(curves, args.buffer)
+    kwargs = {}
+    if args.junction_merge_fraction is not None:
+        kwargs["junction_merge_fraction"] = args.junction_merge_fraction
+    result = topologize(curves, args.buffer, **kwargs)
     chains = result.chains
     ms = (time.perf_counter() - t0) * 1000
     print(f"topologize: {len(chains)} chains, {sum(len(c) for c in chains)} pts  {ms:.0f} ms")

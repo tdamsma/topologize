@@ -237,6 +237,10 @@ pub fn inflate_curves(
 /// min_tip_length : float, default None (= buffer_distance * 2)
 ///     Prune terminal chains shorter than this length before chain extraction.
 ///     Set to 0.0 to disable pruning.
+/// junction_merge_fraction : float, default None (= 1.5)
+///     Contract short edges between junction nodes (degree ≥ 3) at crossings.
+///     Threshold = fraction × buffer_distance. Merges 70–90° crossings with
+///     the default; set to 0.0 to disable and preserve two separate T-junctions.
 ///
 /// Returns
 /// -------
@@ -245,13 +249,14 @@ pub fn inflate_curves(
 ///   nodes         : list of (x, y) tuples — one per unique chain endpoint
 ///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
 pub fn topologize(
     _py: Python<'_>,
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
+    junction_merge_fraction: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
     // Decimate dense input before inflate so clipper2 isn't fed millions of
     // nearly-duplicate points. min_step = 0.15 × buffer only removes points
@@ -306,6 +311,12 @@ pub fn topologize(
         graph::prune_short_tips(&raw_graph, tip_len)
     } else {
         raw_graph
+    };
+    let merge_frac = junction_merge_fraction.unwrap_or(1.5);
+    let graph = if merge_frac > 0.0 {
+        graph::merge_close_junctions(&graph, merge_frac * buffer_distance)
+    } else {
+        graph
     };
     let chains = graph::extract_chains(&graph);
 

@@ -212,3 +212,26 @@ def test_chains_at_node_covers_all():
     for i, (s, e) in enumerate(result.chain_node_ids):
         assert i in result.chains_at_node(s)
         assert i in result.chains_at_node(e)
+
+
+# ---------------------------------------------------------------------------
+# Junction merging
+# ---------------------------------------------------------------------------
+
+def test_perpendicular_crossing_merges_to_x_junction():
+    """Default junction_merge_fraction should collapse two T-junctions into a degree-4 node."""
+    result = topologize(crossing_curves(), buffer_distance=0.4)
+    assert np.any(result.node_degree >= 4), (
+        f"Expected a degree-4 X-junction after merging, got degrees: {result.node_degree}"
+    )
+
+
+def test_perpendicular_crossing_no_merge_preserves_t_junctions():
+    """junction_merge_fraction=0.0 should keep two separate degree-3 T-junctions."""
+    result = topologize(crossing_curves(), buffer_distance=0.4, junction_merge_fraction=0.0)
+    assert not np.any(result.node_degree >= 4), (
+        f"Expected no degree-4 nodes with merging disabled, got degrees: {result.node_degree}"
+    )
+    assert np.sum(result.node_degree >= 3) >= 2, (
+        f"Expected at least two degree-3 T-junctions, got degrees: {result.node_degree}"
+    )

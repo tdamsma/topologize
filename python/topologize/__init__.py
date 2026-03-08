@@ -96,6 +96,7 @@ def topologize(
     *,
     simplification: float | None = None,
     min_tip_length: float | None = None,
+    junction_merge_fraction: float | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -117,6 +118,10 @@ def topologize(
     min_tip_length : float or None, default None (= buffer_distance * 2)
         Terminal chains shorter than this are pruned before chain extraction.
         Set to 0.0 to disable pruning.
+    junction_merge_fraction : float or None, default None (= 1.5)
+        Contract short edges between junction nodes (degree ≥ 3) at crossings.
+        Threshold = fraction × buffer_distance. Merges 70–90° crossings with
+        the default; set to 0.0 to preserve two separate T-junctions.
 
     Returns
     -------
@@ -132,6 +137,8 @@ def topologize(
         kwargs["simplification"] = float(simplification)
     if min_tip_length is not None:
         kwargs["min_tip_length"] = float(min_tip_length)
+    if junction_merge_fraction is not None:
+        kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
 
     raw_chains, raw_nodes, raw_chain_node_ids = _topologize(
         [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
