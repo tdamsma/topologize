@@ -28,15 +28,19 @@ Concrete examples:
 
 ## Installation
 
-Requires a Rust toolchain (stable) and [`uv`](https://github.com/astral-sh/uv) or `pip` with `maturin`.
-
 ```bash
-git clone https://github.com/yourname/topologize
-cd topologize
-uv run maturin develop --release
+pip install topologize
 ```
 
 Runtime dependency: `numpy` only.
+
+To build from source (requires a Rust toolchain):
+
+```bash
+git clone https://github.com/tdamsma/topologize
+cd topologize
+uv run maturin develop --release
+```
 
 ## Quick start
 
