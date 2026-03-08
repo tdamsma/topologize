@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "topologize"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cdt",
  "clipper2-rust",
