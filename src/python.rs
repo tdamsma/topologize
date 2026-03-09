@@ -244,10 +244,13 @@ pub fn inflate_curves(
 ///
 /// Returns
 /// -------
-/// (chains, nodes, chain_node_ids) where:
+/// (chains, nodes, chain_node_ids, chain_widths) where:
 ///   chains        : list of lists of (x, y) tuples
 ///   nodes         : list of (x, y) tuples — one per unique chain endpoint
 ///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
+///   chain_widths  : list of lists of f64 — estimated contour width at each
+///                   chain point (2 × distance to nearest inflated polygon
+///                   boundary vertex)
 #[pyfunction]
 #[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
 pub fn topologize(
@@ -257,7 +260,7 @@ pub fn topologize(
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
-) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
+) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
     // Decimate dense input before inflate so clipper2 isn't fed millions of
     // nearly-duplicate points. min_step = 0.15 × buffer only removes points
     // in truly dense regions.
@@ -302,7 +305,16 @@ pub fn topologize(
     }
 
     if all_segments.is_empty() {
-        return Ok((vec![], vec![], vec![]));
+        return Ok((vec![], vec![], vec![], vec![]));
+    }
+
+    // Collect all boundary vertices from the preprocessed polygons for width computation.
+    let mut boundary_pts: Vec<Pt> = Vec::new();
+    for (outer, holes) in &polygons {
+        boundary_pts.extend_from_slice(outer);
+        for h in holes {
+            boundary_pts.extend_from_slice(h);
+        }
     }
 
     let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
@@ -376,5 +388,15 @@ pub fn topologize(
 
     let out: Vec<Vec<Pt>> = processed.into_iter().map(|(pts, _, _)| pts).collect();
 
-    Ok((out, nodes, chain_node_ids))
+    let chain_widths: Vec<Vec<f64>> = out.iter().map(|pts| {
+        pts.iter().map(|&(px, py)| {
+            let min_d2 = boundary_pts.iter().fold(f64::INFINITY, |acc, &(bx, by)| {
+                let d2 = (px - bx) * (px - bx) + (py - by) * (py - by);
+                acc.min(d2)
+            });
+            2.0 * min_d2.sqrt()
+        }).collect()
+    }).collect();
+
+    Ok((out, nodes, chain_node_ids, chain_widths))
 }

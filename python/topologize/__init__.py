@@ -17,11 +17,15 @@ class TopologizeResult:
         Unique chain-endpoint positions.
     chain_node_ids : list of (start_id, end_id) tuples
         Indices into ``nodes`` for each chain's endpoints.
+    chain_widths : list of (M,) numpy arrays
+        Estimated contour width at each chain point (2 × distance to nearest
+        inflated polygon boundary vertex).
     """
 
     chains: list[np.ndarray]
     nodes: np.ndarray
     chain_node_ids: list[tuple[int, int]]
+    chain_widths: list[np.ndarray]
 
     @property
     def node_degree(self) -> np.ndarray:
@@ -129,6 +133,9 @@ def topologize(
         ``.chains``        — list of (M, 2) arrays, one per non-branching segment
         ``.nodes``         — (K, 2) array of unique chain-endpoint positions
         ``.chain_node_ids``— list of (start_id, end_id) per chain
+        ``.chain_widths``  — list of (M,) arrays, estimated contour width at each
+                             chain point (2 × distance to nearest inflated polygon
+                             boundary vertex)
     """
     from topologize._internal import topologize as _topologize
 
@@ -140,7 +147,7 @@ def topologize(
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
 
-    raw_chains, raw_nodes, raw_chain_node_ids = _topologize(
+    raw_chains, raw_nodes, raw_chain_node_ids, raw_chain_widths = _topologize(
         [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
         buffer_distance,
         **kwargs,
@@ -149,5 +156,11 @@ def topologize(
     chains = [np.array(chain) for chain in raw_chains]
     nodes = np.array(raw_nodes).reshape(-1, 2)
     chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
+    chain_widths = [np.array(w) for w in raw_chain_widths]
 
-    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
+    return TopologizeResult(
+        chains=chains,
+        nodes=nodes,
+        chain_node_ids=chain_node_ids,
+        chain_widths=chain_widths,
+    )
