@@ -436,6 +436,11 @@ def topologize(
     if compute_widths:
         kwargs["compute_widths"] = True
     if curve_ids is not None:
+        if len(curve_ids) != len(curves):
+            raise ValueError(
+                f"curve_ids has {len(curve_ids)} entries but curves has {len(curves)}; "
+                "lengths must match"
+            )
         kwargs["curve_ids"] = [int(i) for i in curve_ids]
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)

@@ -406,14 +406,24 @@ fn topologize_inner(
             let mut contributing: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
             for &chain_pt in chain_pts {
                 for (curve_idx, curve) in decimated.iter().enumerate() {
-                    if curve.len() < 2 {
+                    if curve.is_empty() {
                         continue;
                     }
                     let curve_id = ids.get(curve_idx).copied().unwrap_or(curve_idx as i64);
                     if contributing.contains(&curve_id) {
                         continue; // already attributed
                     }
-                    if point_to_polyline_dist_sq(chain_pt, curve) <= thresh_sq {
+                    // Single-point curves have no segments; fall back to
+                    // point-to-point distance so they can still be attributed.
+                    let dist_sq = if curve.len() < 2 {
+                        let (bx, by) = curve[0];
+                        let dx = chain_pt.0 - bx;
+                        let dy = chain_pt.1 - by;
+                        dx * dx + dy * dy
+                    } else {
+                        point_to_polyline_dist_sq(chain_pt, curve)
+                    };
+                    if dist_sq <= thresh_sq {
                         contributing.insert(curve_id);
                     }
                 }
