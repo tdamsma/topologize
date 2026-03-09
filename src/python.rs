@@ -179,7 +179,7 @@ pub fn triangulate_curves(
 ) -> Vec<(Pt, Pt, Pt)> {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
-    let polygons = inflate::inflate(&decimated, buffer_distance);
+    let polygons = inflate::inflate(&decimated, buffer_distance, None);
     let rdp_boundary = buffer_distance * 0.15;
     let max_seg = buffer_distance * 1.5;
     let mut out = Vec::new();
@@ -215,7 +215,7 @@ pub fn inflate_curves(
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    inflate::inflate(&decimated, buffer_distance)
+    inflate::inflate(&decimated, buffer_distance, None)
 }
 
 /// Topologize a list of polylines into clean centerline chains.
@@ -249,7 +249,7 @@ pub fn inflate_curves(
 ///   nodes         : list of (x, y) tuples — one per unique chain endpoint
 ///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None))]
 pub fn topologize(
     _py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -257,6 +257,7 @@ pub fn topologize(
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
+    per_curve_widths: Option<Vec<Vec<f64>>>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
     // Decimate dense input before inflate so clipper2 isn't fed millions of
     // nearly-duplicate points. min_step = 0.15 × buffer only removes points
@@ -267,7 +268,7 @@ pub fn topologize(
         .map(|c| decimate_curve(c, min_step))
         .collect();
 
-    let polygons = inflate::inflate(&decimated, buffer_distance);
+    let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref());
 
     // RDP-simplify polygon boundary: near-collinear points from the parallel
     // offset are pure CDT overhead — the skeleton can't resolve below
