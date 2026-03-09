@@ -66,14 +66,19 @@ def triangulate(
 def inflate(
     curves: list[np.ndarray],
     buffer_distance: float,
+    *,
+    per_curve_widths: list[list[float]] | None = None,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """
     Inflate polylines and return the buffer polygons.
 
     Parameters
     ----------
-    curves : list of (N, 2) numpy arrays
+    curves : list of (N, 2) or (N, 3) numpy arrays
+        If an array has shape (N, 3), column 2 is used as per-vertex buffer radius.
     buffer_distance : float
+    per_curve_widths : list of list[float] or None
+        Explicit per-vertex radii; takes precedence over (N, 3) column.
 
     Returns
     -------
@@ -83,9 +88,28 @@ def inflate(
     """
     from topologize._internal import inflate_curves as _inflate
 
+    curves_xy = []
+    auto_widths = []
+    for c in curves:
+        arr = np.asarray(c, dtype=float)
+        if arr.ndim == 2 and arr.shape[1] == 3:
+            curves_xy.append(arr[:, :2])
+            auto_widths.append(arr[:, 2].tolist())
+        else:
+            curves_xy.append(arr)
+            auto_widths.append([])
+
+    has_auto = any(len(w) > 0 for w in auto_widths)
+    widths_to_pass = per_curve_widths if per_curve_widths is not None else (auto_widths if has_auto else None)
+
+    kwargs = {}
+    if widths_to_pass is not None:
+        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
+
     raw = _inflate(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
+        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves_xy],
         buffer_distance,
+        **kwargs,
     )
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
@@ -156,6 +180,17 @@ def topologize(
     # Use explicit per_curve_widths if provided, else auto_widths (if any curve had 3 cols).
     has_auto = any(len(w) > 0 for w in auto_widths)
     widths_to_pass = per_curve_widths if per_curve_widths is not None else (auto_widths if has_auto else None)
+
+    # Validate that explicit per-curve width arrays have the right length.
+    if per_curve_widths is not None:
+        for i, (w, c) in enumerate(zip(per_curve_widths, curves_xy)):
+            w_len = len(w)
+            if w_len > 0 and w_len != len(c):
+                raise ValueError(
+                    f"per_curve_widths[{i}] has {w_len} entries but curve {i} "
+                    f"has {len(c)} points; lengths must match (or pass [] to use "
+                    "buffer_distance for that curve)"
+                )
 
     kwargs = {}
     if simplification is not None:

@@ -28,11 +28,18 @@ fn inflate_curve_variable(
         .iter()
         .map(|&(x, y)| Point64::new((x * scale).round() as i64, (y * scale).round() as i64))
         .collect();
+    // arc_tol is derived from the global buffer_distance, not per-vertex widths.
+    // End-cap smoothness is therefore approximate when widths vary widely.
     let mut co = ClipperOffset::new(2.0, arc_tol * scale, false, false);
     co.add_path(&path64, JoinType::Square, EndType::Round);
     let widths_owned: Vec<f64> = widths.to_vec();
     let cb: DeltaCallback64 = Box::new(move |_path: &Path64, _norms: &PathD, curr_idx: usize, _prev_idx: usize| {
-        widths_owned.get(curr_idx).copied().unwrap_or(0.0) * scale
+        // Clamp to last width rather than collapsing to 0 when curr_idx is
+        // out of bounds. Python validates that lengths match; this is a
+        // safety net against silent bad results.
+        let w = widths_owned.get(curr_idx).copied()
+            .unwrap_or_else(|| *widths_owned.last().unwrap_or(&0.0));
+        w * scale
     });
     let mut solution64 = Paths64::new();
     co.execute_with_callback(cb, &mut solution64);

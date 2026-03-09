@@ -202,20 +202,31 @@ pub fn triangulate_curves(
 /// The same input decimation applied inside `topologize` is used here so
 /// the polygons match exactly what the skeleton sees.
 ///
+/// Parameters
+/// ----------
+/// curves : list of lists of (x, y) tuples
+/// buffer_distance : float
+/// per_curve_widths : list of lists of float, default None
+///     Per-vertex radii for each curve (one list per curve). If provided,
+///     each sub-list must have the same length as the corresponding curve.
+///     Curves with an empty sub-list (or missing entry) use `buffer_distance`.
+///
 /// Returns
 /// -------
 /// list of (outer, holes) where outer and each hole is a list of (x, y) tuples
 #[pyfunction]
+#[pyo3(signature = (curves, buffer_distance, per_curve_widths=None))]
 pub fn inflate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
+    per_curve_widths: Option<Vec<Vec<f64>>>,
 ) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    inflate::inflate(&decimated, buffer_distance, None)
+    inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref())
 }
 
 /// Topologize a list of polylines into clean centerline chains.
@@ -241,6 +252,11 @@ pub fn inflate_curves(
 ///     Contract short edges between junction nodes (degree ≥ 3) at crossings.
 ///     Threshold = fraction × buffer_distance. Merges 70–90° crossings with
 ///     the default; set to 0.0 to disable and preserve two separate T-junctions.
+/// per_curve_widths : list of lists of float, default None
+///     Per-vertex inflate radii for each curve (one list per curve). Each
+///     sub-list must have the same length as the corresponding curve; curves
+///     with an empty sub-list use `buffer_distance`. Zero widths produce a
+///     degenerate (collapsed) polygon at that vertex.
 ///
 /// Returns
 /// -------
