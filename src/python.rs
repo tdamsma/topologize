@@ -401,17 +401,44 @@ fn topologize_inner(
     };
 
     let chain_source_ids: Vec<Vec<i64>> = if let Some(ref ids) = curve_ids {
+        // Precompute per-curve bounding boxes for cheap spatial prefiltering.
+        let bboxes: Vec<(f64, f64, f64, f64)> = decimated.iter().map(|curve| {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for &(x, y) in curve {
+                if x < min_x { min_x = x; }
+                if y < min_y { min_y = y; }
+                if x > max_x { max_x = x; }
+                if y > max_y { max_y = y; }
+            }
+            (min_x, min_y, max_x, max_y)
+        }).collect();
+
         let thresh_sq = buffer_distance * buffer_distance;
         out.iter().map(|chain_pts| {
             let mut contributing: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+            // Track which curve indices have not yet been attributed.
+            let mut unattributed: Vec<usize> = (0..decimated.len()).collect();
             for &chain_pt in chain_pts {
-                for (curve_idx, curve) in decimated.iter().enumerate() {
+                if unattributed.is_empty() {
+                    break; // all curves attributed — no need to check further points
+                }
+                unattributed.retain(|&curve_idx| {
+                    let curve = &decimated[curve_idx];
                     if curve.is_empty() {
-                        continue;
+                        return true; // keep in unattributed (empty curve can never match)
                     }
-                    let curve_id = ids.get(curve_idx).copied().unwrap_or(curve_idx as i64);
-                    if contributing.contains(&curve_id) {
-                        continue; // already attributed
+                    // Cheap bounding-box check: expand bbox by buffer_distance and
+                    // skip point-to-polyline distance for obviously far curves.
+                    let (min_x, min_y, max_x, max_y) = bboxes[curve_idx];
+                    if chain_pt.0 < min_x - buffer_distance
+                        || chain_pt.0 > max_x + buffer_distance
+                        || chain_pt.1 < min_y - buffer_distance
+                        || chain_pt.1 > max_y + buffer_distance
+                    {
+                        return true; // keep in unattributed — too far
                     }
                     // Single-point curves have no segments; fall back to
                     // point-to-point distance so they can still be attributed.
@@ -424,13 +451,17 @@ fn topologize_inner(
                         point_to_polyline_dist_sq(chain_pt, curve)
                     };
                     if dist_sq <= thresh_sq {
-                        contributing.insert(curve_id);
+                        contributing.insert(ids[curve_idx]);
+                        false // remove from unattributed
+                    } else {
+                        true // keep in unattributed
                     }
-                }
+                });
             }
             contributing.into_iter().collect()
         }).collect()
     } else {
+        // No curve_ids provided — return one empty vec per chain
         out.iter().map(|_| vec![]).collect()
     };
 
