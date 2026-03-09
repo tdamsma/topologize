@@ -102,6 +102,22 @@ def inflate(
     has_auto = any(len(w) > 0 for w in auto_widths)
     widths_to_pass = per_curve_widths if per_curve_widths is not None else (auto_widths if has_auto else None)
 
+    # Validate explicit per_curve_widths before passing to Rust.
+    if per_curve_widths is not None:
+        if len(per_curve_widths) > len(curves_xy):
+            raise ValueError(
+                f"per_curve_widths has {len(per_curve_widths)} entries but only "
+                f"{len(curves_xy)} curves were provided; lengths must match"
+            )
+        for i, (w, c) in enumerate(zip(per_curve_widths, curves_xy)):
+            w_len = len(w)
+            if w_len > 0 and w_len != len(c):
+                raise ValueError(
+                    f"per_curve_widths[{i}] has {w_len} entries but curve {i} "
+                    f"has {len(c)} points; lengths must match (or pass [] to use "
+                    "buffer_distance for that curve)"
+                )
+
     kwargs = {}
     if widths_to_pass is not None:
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
@@ -183,6 +199,11 @@ def topologize(
 
     # Validate that explicit per-curve width arrays have the right length.
     if per_curve_widths is not None:
+        if len(per_curve_widths) > len(curves_xy):
+            raise ValueError(
+                f"per_curve_widths has {len(per_curve_widths)} entries but only "
+                f"{len(curves_xy)} curves were provided; lengths must match"
+            )
         for i, (w, c) in enumerate(zip(per_curve_widths, curves_xy)):
             w_len = len(w)
             if w_len > 0 and w_len != len(c):

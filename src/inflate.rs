@@ -32,14 +32,21 @@ fn inflate_curve_variable(
     // End-cap smoothness is therefore approximate when widths vary widely.
     let mut co = ClipperOffset::new(2.0, arc_tol * scale, false, false);
     co.add_path(&path64, JoinType::Square, EndType::Round);
+    // Enforce that the widths slice matches the path length. A mismatch means
+    // the caller passed wrong data; clamping would silently produce incorrect
+    // geometry. Callers (Python wrapper and internal Rust code) are responsible
+    // for ensuring lengths match before calling this function.
+    assert_eq!(
+        widths.len(),
+        pts.len(),
+        "inflate_curve_variable: widths.len() ({}) must equal pts.len() ({})",
+        widths.len(),
+        pts.len(),
+    );
     let widths_owned: Vec<f64> = widths.to_vec();
     let cb: DeltaCallback64 = Box::new(move |_path: &Path64, _norms: &PathD, curr_idx: usize, _prev_idx: usize| {
-        // Clamp to last width rather than collapsing to 0 when curr_idx is
-        // out of bounds. Python validates that lengths match; this is a
-        // safety net against silent bad results.
-        let w = widths_owned.get(curr_idx).copied()
-            .unwrap_or_else(|| *widths_owned.last().unwrap_or(&0.0));
-        w * scale
+        // SAFETY: lengths are asserted equal above; indexing is always in bounds.
+        widths_owned[curr_idx] * scale
     });
     let mut solution64 = Paths64::new();
     co.execute_with_callback(cb, &mut solution64);
