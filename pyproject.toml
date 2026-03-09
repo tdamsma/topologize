@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "topologize"
-version = "0.0.2"
+dynamic = ["version"]
 description = "Convert messy overlapping polylines into clean topological centerline chains"
 readme = "README.md"
 license = "MIT"
