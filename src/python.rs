@@ -308,7 +308,20 @@ pub fn topologize(
         return Ok((vec![], vec![], vec![], vec![]));
     }
 
-    // Collect all boundary vertices from the preprocessed polygons for width computation.
+    // Collect all boundary vertices from the preprocessed (post-RDP + subdivided)
+    // polygons for width estimation.
+    //
+    // Width approximation: 2 × distance to nearest boundary *vertex*, not edge.
+    // The subdivision step caps edge length at 1.5 × buffer_distance, so a
+    // skeleton point near the midpoint of the longest possible boundary edge is
+    // at most 0.75 × buffer_distance from the nearest vertex. The estimated width
+    // can therefore overstate the true tube diameter by up to ~1.5 × buffer_distance
+    // in the worst case, but in practice the error is much smaller with dense
+    // boundary sampling.
+    //
+    // Complexity: O(S × B) brute-force NN where S = total skeleton points and
+    // B = total boundary vertices (~1k after RDP for typical inputs). Acceptable
+    // for expected input sizes; a spatial index would help for very large inputs.
     let mut boundary_pts: Vec<Pt> = Vec::new();
     for (outer, holes) in &polygons {
         boundary_pts.extend_from_slice(outer);
