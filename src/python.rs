@@ -236,6 +236,30 @@ pub fn inflate_curves(
     inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size)
 }
 
+/// Squared distance from point p to line segment (a, b).
+fn point_to_seg_dist_sq(p: Pt, a: Pt, b: Pt) -> f64 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq == 0.0 {
+        let ex = p.0 - a.0;
+        let ey = p.1 - a.1;
+        return ex * ex + ey * ey;
+    }
+    let t = ((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq;
+    let t = t.clamp(0.0, 1.0);
+    let qx = a.0 + t * dx - p.0;
+    let qy = a.1 + t * dy - p.1;
+    qx * qx + qy * qy
+}
+
+/// Minimum squared distance from point p to a polyline.
+fn point_to_polyline_dist_sq(p: Pt, pl: &[Pt]) -> f64 {
+    pl.windows(2)
+        .map(|w| point_to_seg_dist_sq(p, w[0], w[1]))
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// Core topologize logic, callable from both single and batch entry points.
 fn topologize_inner(
     curves: &[Vec<Pt>],
@@ -246,7 +270,8 @@ fn topologize_inner(
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<&[Vec<f64>]>,
     compute_widths: bool,
-) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>) {
+    curve_ids: Option<Vec<i64>>,
+) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>, Vec<Vec<i64>>) {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
@@ -281,7 +306,7 @@ fn topologize_inner(
     }
 
     if all_segments.is_empty() {
-        return (vec![], vec![], vec![], vec![]);
+        return (vec![], vec![], vec![], vec![], vec![]);
     }
 
     // Collect boundary vertices only if width computation was requested.
@@ -375,12 +400,36 @@ fn topologize_inner(
         vec![]
     };
 
-    (out, nodes, chain_node_ids, chain_widths)
+    let chain_source_ids: Vec<Vec<i64>> = if let Some(ref ids) = curve_ids {
+        let thresh_sq = buffer_distance * buffer_distance;
+        out.iter().map(|chain_pts| {
+            let mut contributing: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+            for &chain_pt in chain_pts {
+                for (curve_idx, curve) in decimated.iter().enumerate() {
+                    if curve.len() < 2 {
+                        continue;
+                    }
+                    let curve_id = ids.get(curve_idx).copied().unwrap_or(curve_idx as i64);
+                    if contributing.contains(&curve_id) {
+                        continue; // already attributed
+                    }
+                    if point_to_polyline_dist_sq(chain_pt, curve) <= thresh_sq {
+                        contributing.insert(curve_id);
+                    }
+                }
+            }
+            contributing.into_iter().collect()
+        }).collect()
+    } else {
+        out.iter().map(|_| vec![]).collect()
+    };
+
+    (out, nodes, chain_node_ids, chain_widths, chain_source_ids)
 }
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, curve_ids=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -391,15 +440,16 @@ pub fn topologize(
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     compute_widths: bool,
-) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths)))
+    curve_ids: Option<Vec<i64>>,
+) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>, Vec<Vec<i64>>)> {
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, curve_ids)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
 ///
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
-/// simplification, min_tip_length, junction_merge_fraction) — one
-/// independent topologize invocation with its own parameters.
+/// feature_size, simplification, min_tip_length, junction_merge_fraction)
+/// — one independent topologize invocation with its own parameters.
 /// The GIL is released for the duration of the parallel work.
 ///
 /// Returns a list of (chains, nodes, chain_node_ids) tuples, one per job.
@@ -412,7 +462,7 @@ pub fn topologize_batch(
     Ok(py.detach(|| {
         jobs.par_iter()
             .map(|(curves, bd, fs, simp, tip, jmf)| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false);
+                let (chains, nodes, ids, _, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None);
                 (chains, nodes, ids)
             })
             .collect()
