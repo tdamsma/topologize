@@ -12,8 +12,12 @@ type Pt = (f64, f64);
 type Segment = (Pt, Pt);
 
 /// Build the midpoint-graph skeleton using the `cdt` crate.
-pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>], buffer_distance: f64) -> Vec<Segment> {
-    midpoint_segments(outer, holes, buffer_distance, 1.5)
+///
+/// Uses a topological (boundary-hop) criterion to distinguish cross-edges
+/// (spanning the polygon width) from same-side edges (connecting nearby
+/// boundary vertices).  This adapts automatically to variable local width.
+pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
+    midpoint_segments(outer, holes)
 }
 
 /// Return the raw CDT triangles as vertex triples, for debugging/visualisation.
@@ -46,8 +50,6 @@ pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
 fn midpoint_segments(
     outer: &[Pt],
     holes: &[Vec<Pt>],
-    buffer_distance: f64,
-    threshold: f64,
 ) -> Vec<Segment> {
     // Build flat point list and closed contours (last index == first).
     let mut all_pts: Vec<Pt> = Vec::new();
@@ -67,6 +69,21 @@ fn midpoint_segments(
 
     if all_pts.len() < 3 || contours.is_empty() {
         return vec![];
+    }
+
+    // Build point → (ring_id, position_in_ring) mapping for topological
+    // same-side detection.
+    let n_pts = all_pts.len();
+    let mut pt_ring: Vec<usize> = vec![0; n_pts];
+    let mut pt_pos: Vec<usize> = vec![0; n_pts];
+    let mut ring_lens: Vec<usize> = Vec::new();
+    for (ring_id, contour) in contours.iter().enumerate() {
+        let rlen = contour.len() - 1; // unique vertices (last == first)
+        ring_lens.push(rlen);
+        for (pos, &idx) in contour[..rlen].iter().enumerate() {
+            pt_ring[idx] = ring_id;
+            pt_pos[idx] = pos;
+        }
     }
 
     // Break any accidental vertex-on-constraint-edge coincidences that arise
@@ -91,15 +108,28 @@ fn midpoint_segments(
         }
     }
 
-    let min_len = threshold * buffer_distance;
+    // Topological same-side filter: an internal edge whose endpoints are
+    // close along the boundary ring (≤ HOP_THRESHOLD hops) connects nearby
+    // vertices on the same side of the polygon — not a cross-edge.
+    const HOP_THRESHOLD: usize = 2;
 
     let is_ignored = |e: (usize, usize)| -> bool {
+        // Boundary edge (adjacent to only 1 triangle).
         if edge_to_count.get(&e).copied().unwrap_or(0) <= 1 {
             return true;
         }
-        let (ax, ay) = all_pts[e.0];
-        let (bx, by) = all_pts[e.1];
-        ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt() < min_len
+        // Same-side: both endpoints on the same ring and close in hops.
+        let (ru, pu) = (pt_ring[e.0], pt_pos[e.0]);
+        let (rv, pv) = (pt_ring[e.1], pt_pos[e.1]);
+        if ru == rv {
+            let rlen = ring_lens[ru];
+            let diff = if pu > pv { pu - pv } else { pv - pu };
+            let arc = diff.min(rlen - diff);
+            if arc <= HOP_THRESHOLD {
+                return true;
+            }
+        }
+        false
     };
 
     let edge_midpoint = |e: (usize, usize)| -> Pt {
