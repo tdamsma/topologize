@@ -361,39 +361,34 @@ fn topologize_inner(
 #[pyfunction]
 #[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
 pub fn topologize(
-    _py: Python<'_>,
+    py: Python<'_>,
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
-    Ok(topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction))
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
 ///
-/// Each element of `curve_sets` is an independent input (list of polylines)
-/// that would normally be passed to `topologize`. All sets share the same
-/// parameters. The GIL is released for the duration of the parallel work.
+/// Each element of `jobs` is a tuple of (curves, buffer_distance,
+/// simplification, min_tip_length, junction_merge_fraction) — one
+/// independent topologize invocation with its own parameters.
+/// The GIL is released for the duration of the parallel work.
 ///
-/// Returns a list of (chains, nodes, chain_node_ids) tuples, one per input set.
+/// Returns a list of (chains, nodes, chain_node_ids) tuples, one per job.
 #[pyfunction]
-#[pyo3(signature = (curve_sets, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
 pub fn topologize_batch(
     py: Python<'_>,
-    curve_sets: Vec<Vec<Vec<Pt>>>,
-    buffer_distance: f64,
-    simplification: Option<f64>,
-    min_tip_length: Option<f64>,
-    junction_merge_fraction: Option<f64>,
+    jobs: Vec<(Vec<Vec<Pt>>, f64, Option<f64>, Option<f64>, Option<f64>)>,
 ) -> PyResult<Vec<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)>> {
     use rayon::prelude::*;
     Ok(py.detach(|| {
-        curve_sets
-            .par_iter()
-            .map(|curves| {
-                topologize_inner(curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction)
+        jobs.par_iter()
+            .map(|(curves, bd, simp, tip, jmf)| {
+                topologize_inner(curves, *bd, *simp, *tip, *jmf)
             })
             .collect()
     }))

@@ -6,6 +6,28 @@ import numpy as np
 
 
 @dataclass
+class TopologizeJob:
+    """Input specification for a single :func:`topologize_batch` job.
+
+    Attributes
+    ----------
+    curves : list of (N, 2) numpy arrays
+        Input polylines for this job.
+    buffer_distance : float
+        Inflation radius.
+    simplification : float or None
+    min_tip_length : float or None
+    junction_merge_fraction : float or None
+    """
+
+    curves: list[np.ndarray]
+    buffer_distance: float
+    simplification: float | None = None
+    min_tip_length: float | None = None
+    junction_merge_fraction: float | None = None
+
+
+@dataclass
 class TopologizeResult:
     """Result of :func:`topologize`.
 
@@ -167,44 +189,34 @@ def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResul
 
 
 def topologize_batch(
-    curve_sets: list[list[np.ndarray]],
-    buffer_distance: float,
-    *,
-    simplification: float | None = None,
-    min_tip_length: float | None = None,
-    junction_merge_fraction: float | None = None,
+    jobs: list[TopologizeJob],
 ) -> list[TopologizeResult]:
     """
     Process multiple independent curve-sets in parallel.
 
-    Each element of ``curve_sets`` is an independent input (list of polylines)
-    that would normally be passed to :func:`topologize`. All sets share the
-    same parameters. Processing runs in parallel via Rayon with the GIL
-    released.
+    Each :class:`TopologizeJob` bundles its own curves and parameters.
+    Processing runs in parallel via Rayon with the GIL released.
 
     Parameters
     ----------
-    curve_sets : list of (list of (N, 2) numpy arrays)
-        One curve-set per independent topologize job.
-    buffer_distance : float
-    simplification : float or None
-    min_tip_length : float or None
-    junction_merge_fraction : float or None
+    jobs : list of TopologizeJob
+        One job per independent topologize invocation.
 
     Returns
     -------
-    list of TopologizeResult — one per input curve-set, in the same order.
+    list of TopologizeResult — one per input job, in the same order.
     """
     from topologize._internal import topologize_batch as _batch
 
-    kwargs = {}
-    if simplification is not None:
-        kwargs["simplification"] = float(simplification)
-    if min_tip_length is not None:
-        kwargs["min_tip_length"] = float(min_tip_length)
-    if junction_merge_fraction is not None:
-        kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
-
-    converted = [_convert_curves(cs) for cs in curve_sets]
-    raw_results = _batch(converted, buffer_distance, **kwargs)
+    packed = [
+        (
+            _convert_curves(job.curves),
+            job.buffer_distance,
+            job.simplification,
+            job.min_tip_length,
+            job.junction_merge_fraction,
+        )
+        for job in jobs
+    ]
+    raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]

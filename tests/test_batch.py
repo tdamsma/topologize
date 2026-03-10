@@ -3,7 +3,7 @@
 import time
 
 import numpy as np
-from topologize import topologize, topologize_batch
+from topologize import topologize, topologize_batch, TopologizeJob
 
 
 def line(x0, y0, x1, y1, n=10):
@@ -22,7 +22,7 @@ def make_curve_sets():
 def test_batch_matches_sequential():
     curve_sets = make_curve_sets()
     bd = 0.5
-    batch_results = topologize_batch(curve_sets, bd)
+    batch_results = topologize_batch([TopologizeJob(cs, bd) for cs in curve_sets])
     for cs, br in zip(curve_sets, batch_results):
         sr = topologize(cs, buffer_distance=bd)
         assert len(br.chains) == len(sr.chains)
@@ -33,13 +33,13 @@ def test_batch_matches_sequential():
 
 
 def test_batch_empty_input():
-    results = topologize_batch([], buffer_distance=1.0)
+    results = topologize_batch([])
     assert results == []
 
 
 def test_batch_single_item():
     curves = [line(0, 0, 10, 0)]
-    batch = topologize_batch([curves], buffer_distance=0.5)
+    batch = topologize_batch([TopologizeJob(curves, 0.5)])
     single = topologize(curves, buffer_distance=0.5)
     assert len(batch) == 1
     assert len(batch[0].chains) == len(single.chains)
@@ -61,9 +61,10 @@ def test_batch_faster_than_sequential():
         curve_sets.append(curves)
 
     bd = 2.0
+    jobs = [TopologizeJob(cs, bd) for cs in curve_sets]
 
     # Warm up (first call may include one-time rayon thread-pool init)
-    topologize_batch(curve_sets[:2], bd)
+    topologize_batch(jobs[:2])
 
     t0 = time.perf_counter()
     for cs in curve_sets:
@@ -71,7 +72,7 @@ def test_batch_faster_than_sequential():
     t_seq = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    topologize_batch(curve_sets, bd)
+    topologize_batch(jobs)
     t_batch = time.perf_counter() - t0
 
     speedup = t_seq / t_batch
@@ -82,15 +83,15 @@ def test_batch_faster_than_sequential():
     )
 
 
-def test_batch_kwargs_forwarded():
+def test_batch_per_job_params():
+    """Each job can have its own parameters."""
     curve_sets = make_curve_sets()
-    results = topologize_batch(
-        curve_sets,
-        buffer_distance=0.5,
-        simplification=0.0,
-        min_tip_length=0.0,
-        junction_merge_fraction=0.0,
-    )
+    jobs = [
+        TopologizeJob(curve_sets[0], 0.5, simplification=0.0),
+        TopologizeJob(curve_sets[1], 0.5, min_tip_length=0.0),
+        TopologizeJob(curve_sets[2], 0.5, junction_merge_fraction=0.0),
+    ]
+    results = topologize_batch(jobs)
     assert len(results) == 3
     for r in results:
         assert len(r.chains) > 0

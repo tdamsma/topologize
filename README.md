@@ -67,6 +67,41 @@ result.chain_node_ids  # list of (start_id, end_id) per chain
 | `curves` | `list[np.ndarray]` | Input polylines, each `(N, 2)`. Closed curves should repeat the first point at the end. |
 | `buffer_distance` | `float` | Inflation radius. |
 | `simplification` | `float \| None` | RDP tolerance on output chains (default: `buffer_distance / 10`). Set to `0` to disable. |
+| `min_tip_length` | `float \| None` | Prune terminal chains shorter than this (default: `buffer_distance * 2`). Set to `0` to disable. |
+| `junction_merge_fraction` | `float \| None` | Merge nearby junctions within `fraction × buffer_distance` (default: `1.5`). Set to `0` to disable. |
+
+### Batch processing
+
+For workloads with many independent curve-sets (e.g. per-layer toolpath slicing), `topologize_batch` processes them in parallel via Rayon with the GIL released. Each job carries its own parameters:
+
+```python
+from topologize import topologize_batch, TopologizeJob
+
+jobs = [
+    TopologizeJob(curves_layer_1, buffer_distance=0.5),
+    TopologizeJob(curves_layer_2, buffer_distance=1.0, simplification=0.0),
+    # ...
+]
+results = topologize_batch(jobs)
+# returns list[TopologizeResult], one per job
+```
+
+On multi-core machines this is significantly faster than a Python loop.
+
+### Async-style processing with ThreadPoolExecutor
+
+Single `topologize` releases the GIL during Rust computation, so you can also use Python's `ThreadPoolExecutor` for async-style processing:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from topologize import topologize
+
+with ThreadPoolExecutor() as pool:
+    futures = [pool.submit(topologize, cs, buffer_distance=0.5) for cs in curve_sets]
+    results = [f.result() for f in futures]
+```
+
+This is useful when jobs arrive one at a time (e.g. from a queue) rather than all at once.
 
 ## Examples
 
@@ -96,13 +131,14 @@ src/
 
 python/
   topologize/
-    __init__.py      Public API (TopologizeResult, topologize, inflate, triangulate)
+    __init__.py      Public API (TopologizeResult, topologize, topologize_batch, inflate, triangulate)
   examples/
     getting_started.py
     svg_centerline.py
 
 tests/
   test_topologize.py
+  test_batch.py
 
 Cargo.toml           Rust manifest
 pyproject.toml       Python build config (maturin)
