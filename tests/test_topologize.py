@@ -1,5 +1,6 @@
 import numpy as np
-from topologize import topologize
+import pytest
+from topologize import inflate, topologize
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +251,103 @@ def test_chains_at_node_covers_all():
     for i, (s, e) in enumerate(result.chain_node_ids):
         assert i in result.chains_at_node(s)
         assert i in result.chains_at_node(e)
+
+
+# ---------------------------------------------------------------------------
+# Variable per-vertex widths
+# ---------------------------------------------------------------------------
+
+def test_inflate_backward_compatible_2col():
+    """Standard (N,2) curves inflate without per-vertex widths (backward compat)."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    result = inflate(curves, buffer_distance=0.5)
+    assert len(result) >= 1
+    outer, holes = result[0]
+    assert isinstance(outer, np.ndarray)
+    assert outer.ndim == 2 and outer.shape[1] == 2
+
+
+def test_inflate_n3_auto_widths():
+    """(N,3) curves: column 2 is used as per-vertex buffer radius."""
+    # Curve with per-vertex widths embedded in column 2.
+    curve = np.array([[0.0, 0.0, 1.0], [5.0, 0.0, 2.0]])
+    result = inflate([curve], buffer_distance=0.5)
+    assert len(result) >= 1
+    outer, _ = result[0]
+    assert isinstance(outer, np.ndarray)
+    assert outer.shape[1] == 2  # output is always (N,2)
+
+
+def test_inflate_explicit_per_curve_widths():
+    """Explicit per_curve_widths overrides (N,3) column."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [[0.8, 1.5]]
+    result = inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+    assert len(result) >= 1
+    outer, _ = result[0]
+    assert isinstance(outer, np.ndarray)
+    assert outer.shape[1] == 2
+
+
+def test_inflate_mixed_widths_some_empty():
+    """Mixed input: one curve with widths, one using buffer_distance (empty list)."""
+    curves = [
+        np.array([[0.0, 0.0], [5.0, 0.0]]),
+        np.array([[0.0, 3.0], [5.0, 3.0]]),
+    ]
+    widths = [[1.0, 1.0], []]  # second curve uses buffer_distance
+    result = inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+    assert len(result) >= 1
+
+
+def test_inflate_per_curve_widths_length_mismatch_raises():
+    """per_curve_widths with wrong vertex count raises ValueError."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [[1.0, 2.0, 3.0]]  # 3 entries for a 2-point curve
+    with pytest.raises(ValueError, match="per_curve_widths"):
+        inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+
+
+def test_inflate_per_curve_widths_too_many_entries_raises():
+    """More per_curve_widths entries than curves raises ValueError."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [[1.0, 1.0], [2.0, 2.0]]  # 2 width entries for 1 curve
+    with pytest.raises(ValueError, match="per_curve_widths"):
+        inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+
+
+def test_topologize_with_n3_curves():
+    """topologize accepts (N,3) curves and produces valid output."""
+    curve1 = np.array([[0.0, 0.0, 0.5], [10.0, 0.0, 0.5]])
+    curve2 = np.array([[0.0, 0.3, 0.5], [10.0, 0.3, 0.5]])
+    result = topologize([curve1, curve2], buffer_distance=0.5)
+    assert isinstance(result.chains, list)
+    assert len(result.chains) >= 1
+
+
+def test_topologize_explicit_per_curve_widths():
+    """topologize accepts explicit per_curve_widths."""
+    curves = pair()
+    widths = [[0.5, 0.5], [0.5, 0.5]]
+    result = topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
+    assert isinstance(result.chains, list)
+    assert len(result.chains) >= 1
+
+
+def test_topologize_per_curve_widths_too_many_raises():
+    """topologize rejects per_curve_widths with more entries than curves."""
+    curves = pair()  # 2 curves
+    widths = [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]  # 3 entries
+    with pytest.raises(ValueError, match="per_curve_widths"):
+        topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
+
+
+def test_topologize_per_curve_widths_vertex_mismatch_raises():
+    """topologize rejects per_curve_widths with wrong vertex count."""
+    curves = pair()  # each curve has 2 points
+    widths = [[0.5, 0.5, 0.5], [0.5, 0.5]]  # first has 3 entries for 2-point curve
+    with pytest.raises(ValueError, match="per_curve_widths"):
+        topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
 
 
 # ---------------------------------------------------------------------------
