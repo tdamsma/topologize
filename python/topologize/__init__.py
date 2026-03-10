@@ -79,10 +79,7 @@ def triangulate(
     list of ((x0,y0),(x1,y1),(x2,y2)) tuples — one per triangle.
     """
     from topologize._internal import triangulate_curves as _tri
-    return _tri(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-    )
+    return _tri(_convert_curves(curves), buffer_distance)
 
 
 def inflate(
@@ -105,10 +102,7 @@ def inflate(
     """
     from topologize._internal import inflate_curves as _inflate
 
-    raw = _inflate(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-    )
+    raw = _inflate(_convert_curves(curves), buffer_distance)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
 
@@ -162,17 +156,8 @@ def topologize(
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
 
-    raw_chains, raw_nodes, raw_chain_node_ids = _topologize(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-        **kwargs,
-    )
-
-    chains = [np.array(chain) for chain in raw_chains]
-    nodes = np.array(raw_nodes).reshape(-1, 2)
-    chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
-
-    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
+    result = _topologize(_convert_curves(curves), buffer_distance, **kwargs)
+    return _unpack_result(*result)
 
 
 def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]:

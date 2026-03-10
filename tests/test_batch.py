@@ -23,6 +23,7 @@ def test_batch_matches_sequential():
     curve_sets = make_curve_sets()
     bd = 0.5
     batch_results = topologize_batch([TopologizeJob(cs, bd) for cs in curve_sets])
+    assert len(batch_results) == len(curve_sets)
     for cs, br in zip(curve_sets, batch_results):
         sr = topologize(cs, buffer_distance=bd)
         assert len(br.chains) == len(sr.chains)
@@ -84,14 +85,24 @@ def test_batch_faster_than_sequential():
 
 
 def test_batch_per_job_params():
-    """Each job can have its own parameters."""
+    """Each job can have its own parameters, verified against sequential calls."""
     curve_sets = make_curve_sets()
     jobs = [
         TopologizeJob(curve_sets[0], 0.5, simplification=0.0),
         TopologizeJob(curve_sets[1], 0.5, min_tip_length=0.0),
         TopologizeJob(curve_sets[2], 0.5, junction_merge_fraction=0.0),
     ]
-    results = topologize_batch(jobs)
-    assert len(results) == 3
-    for r in results:
-        assert len(r.chains) > 0
+    batch_results = topologize_batch(jobs)
+    assert len(batch_results) == len(jobs)
+    for job, br in zip(jobs, batch_results):
+        sr = topologize(
+            job.curves,
+            buffer_distance=job.buffer_distance,
+            simplification=job.simplification,
+            min_tip_length=job.min_tip_length,
+            junction_merge_fraction=job.junction_merge_fraction,
+        )
+        assert len(br.chains) == len(sr.chains)
+        assert br.nodes.shape == sr.nodes.shape
+        for bc, sc in zip(br.chains, sr.chains):
+            np.testing.assert_allclose(bc, sc)
