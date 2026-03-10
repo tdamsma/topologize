@@ -12,33 +12,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from topologize import topologize
-
-# %% [markdown]
-# ## Helper: plot curves and chains
-
-# %%
-COLORS = [
-    "#e41a1c", "#377eb8", "#4daf4a", "#ff7f00",
-    "#984ea3", "#a65628", "#f781bf", "#333333",
-]
-
-def plot(curves, chains, buffer_distance, title=""):
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_aspect("equal")
-    ax.set_title(title or f"buffer_distance={buffer_distance}")
-
-    for c in curves:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=6, solid_capstyle="round")
-
-    for i, chain in enumerate(chains):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2)
-
-    plt.tight_layout()
-    plt.show()
 
 # %% [markdown]
 # ## Example 1: a few simple polylines
@@ -74,9 +50,8 @@ curves = [p1, p2, circle, star]
 # %%
 buffer_distance = 0.6
 result = topologize(curves, buffer_distance)
-chains = result.chains
-print(f"{len(chains)} chains, {sum(len(c) for c in chains)} total points")
-plot(curves, chains, buffer_distance, title="Simple shapes")
+print(f"{len(result.chains)} chains, {sum(len(c) for c in result.chains)} total points")
+result.plot(curves, buffer_distance, title="Simple shapes")
 
 # %% [markdown]
 # ## Example 2: effect of buffer_distance
@@ -85,17 +60,9 @@ plot(curves, chains, buffer_distance, title="Simple shapes")
 # producing fewer but smoother chains.
 
 # %%
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-for ax, bd in zip(axes, [0.3, 0.6, 1.2]):
-    ch = topologize(curves, bd).chains
-    ax.set_aspect("equal")
-    ax.set_title(f"buffer_distance={bd}  ({len(ch)} chains)")
-    for c in curves:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=6, solid_capstyle="round")
-    for i, chain in enumerate(ch):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2)
-plt.tight_layout()
-plt.show()
+for bd in [0.3, 0.6, 1.2]:
+    r = topologize(curves, bd)
+    r.plot(curves, bd, title=f"buffer_distance={bd}  ({len(r.chains)} chains)").show()
 
 # %% [markdown]
 # ## Example 3: parallel lines merging into one
@@ -107,17 +74,9 @@ plt.show()
 line_a = np.column_stack([np.linspace(0, 10, 50), np.zeros(50)])
 line_b = np.column_stack([np.linspace(0, 10, 50), np.ones(50) * 0.8])
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-for ax, bd in zip(axes, [0.3, 0.6]):
-    ch = topologize([line_a, line_b], bd).chains
-    ax.set_aspect("equal")
-    ax.set_title(f"buffer_distance={bd}  ({len(ch)} chain{'s' if len(ch) != 1 else ''})")
-    for c in [line_a, line_b]:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=10, solid_capstyle="round")
-    for i, chain in enumerate(ch):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2.5)
-plt.tight_layout()
-plt.show()
+for bd in [0.3, 0.6]:
+    r = topologize([line_a, line_b], bd)
+    r.plot([line_a, line_b], bd, title=f"buffer_distance={bd}  ({len(r.chains)} chain{'s' if len(r.chains) != 1 else ''})").show()
 
 # %% [markdown]
 # ## Example 4: inspecting chain geometry

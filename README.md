@@ -60,15 +60,28 @@ result.nodes           # (K, 2) array of unique junction/endpoint positions
 result.chain_node_ids  # list of (start_id, end_id) per chain
 ```
 
-`buffer_distance` is the single tuning parameter. Use roughly **half the typical gap between nearby strokes** — small enough to keep distinct paths separate, large enough to merge strokes that belong together.
+`buffer_distance` is the main tuning parameter. Use roughly **half the typical gap between nearby strokes** — small enough to keep distinct paths separate, large enough to merge strokes that belong together.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `curves` | `list[np.ndarray]` | Input polylines, each `(N, 2)`. Closed curves should repeat the first point at the end. |
-| `buffer_distance` | `float` | Inflation radius. |
+| `curves` | `list[np.ndarray]` | Input polylines, each `(N, 2)` or `(N, 3)` with per-vertex widths. Closed curves should repeat the first point at the end. |
+| `buffer_distance` | `float \| None` | Inflation radius. Optional when `per_curve_widths` is provided (derived from median of widths). |
 | `simplification` | `float \| None` | RDP tolerance on output chains (default: `buffer_distance / 10`). Set to `0` to disable. |
 | `min_tip_length` | `float \| None` | Prune terminal chains shorter than this (default: `buffer_distance * 2`). Set to `0` to disable. |
 | `junction_merge_fraction` | `float \| None` | Merge nearby junctions within `fraction × buffer_distance` (default: `1.5`). Set to `0` to disable. |
+| `per_curve_widths` | `list \| None` | Per-vertex inflation radii for each curve. Overrides `buffer_distance` for inflation. |
+| `compute_widths` | `bool` | If `True`, populate `result.chain_widths` with estimated contour width at each chain point. |
+
+### Visualization
+
+`TopologizeResult` has a built-in `plot()` method (requires `plotly`):
+
+```python
+result.plot(curves, buffer_distance)                    # basic
+result.plot(curves, buffer_distance, show_triangulation=True)  # + CDT overlay
+```
+
+When `compute_widths=True`, the plot also shows bead-width envelopes around each chain.
 
 ### Batch processing
 
@@ -108,11 +121,19 @@ This is useful when jobs arrive one at a time (e.g. from a queue) rather than al
 All examples are `# %%` cell-delimited Python files — run directly or open as Jupyter notebooks.
 
 ```bash
-# Interactive plot (requires dev dependencies: uv sync --group dev)
+uv sync --group dev  # install plotly, svgpathtools, etc.
+
+# Getting started — basic usage and buffer_distance tuning
+uv run python/examples/getting_started.py
+
+# SVG centerline extraction
 uv run python/examples/svg_centerline.py python/examples/data/topologize.svg --buffer 0.47
 
-# Minimal getting-started notebook
-uv run python/examples/getting_started.py
+# Variable-width per-vertex inflation
+uv run python/examples/variable_width_demo.py
+
+# Parallel / batch processing benchmarks
+uv run python/examples/parallel_processing.py
 ```
 
 ## Algorithm
@@ -135,6 +156,9 @@ python/
   examples/
     getting_started.py
     svg_centerline.py
+    variable_width_demo.py
+    compare_methods.py
+    parallel_processing.py
 
 tests/
   test_topologize.py
