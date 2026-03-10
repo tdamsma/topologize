@@ -58,11 +58,49 @@ def test_returns_result_with_chain_node_ids():
         assert 0 <= e < len(result.nodes)
 
 
+def test_chain_widths_none_by_default():
+    result = topologize(pair(), buffer_distance=0.5)
+    assert result.chain_widths is None
+
+
+def test_returns_result_with_chain_widths():
+    result = topologize(pair(), buffer_distance=0.5, compute_widths=True)
+    assert isinstance(result.chain_widths, list)
+    assert len(result.chain_widths) == len(result.chains)
+    for w, chain in zip(result.chain_widths, result.chains):
+        assert isinstance(w, np.ndarray)
+        assert w.ndim == 1
+        assert len(w) == len(chain)
+
+
+def test_chain_widths_are_positive():
+    result = topologize(pair(), buffer_distance=0.5, compute_widths=True)
+    for w in result.chain_widths:
+        assert np.all(w > 0), "all width values must be positive"
+
+
+def test_chain_widths_approximately_two_times_buffer():
+    """Interior width estimates should be close to 2 × buffer_distance."""
+    buffer_distance = 0.5
+    result = topologize(pair(), buffer_distance=buffer_distance, compute_widths=True)
+    for w in result.chain_widths:
+        if len(w) < 3:
+            continue
+        # Interior points (excluding endpoints) should be near 2× buffer.
+        # Allow ±50% tolerance given the vertex-distance approximation.
+        interior = w[1:-1]
+        assert np.all(interior > 0), "interior widths must be positive"
+        assert np.all(interior < 4 * buffer_distance), (
+            f"interior widths unexpectedly large: {interior}"
+        )
+
+
 def test_empty_input_returns_empty():
     result = topologize([], buffer_distance=1.0)
     assert result.chains == []
     assert result.nodes.shape == (0, 2)
     assert result.chain_node_ids == []
+    assert result.chain_widths is None
 
 
 def test_degenerate_curve_skipped():

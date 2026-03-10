@@ -237,7 +237,8 @@ fn topologize_inner(
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<&[Vec<f64>]>,
-) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>) {
+    compute_widths: bool,
+) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>) {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
@@ -272,8 +273,22 @@ fn topologize_inner(
     }
 
     if all_segments.is_empty() {
-        return (vec![], vec![], vec![]);
+        return (vec![], vec![], vec![], vec![]);
     }
+
+    // Collect boundary vertices only if width computation was requested.
+    let boundary_pts: Vec<Pt> = if compute_widths {
+        let mut pts = Vec::new();
+        for (outer, holes) in &polygons {
+            pts.extend_from_slice(outer);
+            for h in holes {
+                pts.extend_from_slice(h);
+            }
+        }
+        pts
+    } else {
+        Vec::new()
+    };
 
     let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
     let tip_len = min_tip_length.unwrap_or(buffer_distance * 2.0);
@@ -337,46 +352,27 @@ fn topologize_inner(
     }
 
     let out: Vec<Vec<Pt>> = processed.into_iter().map(|(pts, _, _)| pts).collect();
-    (out, nodes, chain_node_ids)
+
+    let chain_widths: Vec<Vec<f64>> = if compute_widths {
+        out.iter().map(|pts| {
+            pts.iter().map(|&(px, py)| {
+                let min_d2 = boundary_pts.iter().fold(f64::INFINITY, |acc, &(bx, by)| {
+                    let d2 = (px - bx) * (px - bx) + (py - by) * (py - by);
+                    acc.min(d2)
+                });
+                2.0 * min_d2.sqrt()
+            }).collect()
+        }).collect()
+    } else {
+        vec![]
+    };
+
+    (out, nodes, chain_node_ids, chain_widths)
 }
 
 /// Topologize a list of polylines into clean centerline chains.
-///
-/// 1. Inflate all curves by `buffer_distance` and union them into polygons.
-/// 2. Simplify polygon boundary (RDP), then subdivide to cap edge length.
-/// 3. Skeletonize each polygon via constrained Delaunay triangulation midpoints.
-/// 4. Snap nearby endpoints and extract maximal non-branching chains.
-/// 5. Smooth and RDP-simplify output chains.
-///
-/// Parameters
-/// ----------
-/// curves : list of lists of (x, y) tuples
-/// buffer_distance : float
-/// simplification : float, default None (= buffer_distance / 10)
-///     RDP tolerance applied to output polylines (in input units), applied
-///     after projection smoothing. Larger values produce fewer output points;
-///     0.0 disables.
-/// min_tip_length : float, default None (= buffer_distance * 2)
-///     Prune terminal chains shorter than this length before chain extraction.
-///     Set to 0.0 to disable pruning.
-/// junction_merge_fraction : float, default None (= 1.5)
-///     Contract short edges between junction nodes (degree ≥ 3) at crossings.
-///     Threshold = fraction × buffer_distance. Merges 70–90° crossings with
-///     the default; set to 0.0 to disable and preserve two separate T-junctions.
-/// per_curve_widths : list of lists of float, default None
-///     Per-vertex inflate radii for each curve (one list per curve). Each
-///     sub-list must have the same length as the corresponding curve; curves
-///     with an empty sub-list use `buffer_distance`. Zero widths produce a
-///     degenerate (collapsed) polygon at that vertex.
-///
-/// Returns
-/// -------
-/// (chains, nodes, chain_node_ids) where:
-///   chains        : list of lists of (x, y) tuples
-///   nodes         : list of (x, y) tuples — one per unique chain endpoint
-///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -385,8 +381,9 @@ pub fn topologize(
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<Vec<Vec<f64>>>,
-) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref())))
+    compute_widths: bool,
+) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
@@ -406,7 +403,8 @@ pub fn topologize_batch(
     Ok(py.detach(|| {
         jobs.par_iter()
             .map(|(curves, bd, simp, tip, jmf)| {
-                topologize_inner(curves, *bd, *simp, *tip, *jmf, None)
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *simp, *tip, *jmf, None, false);
+                (chains, nodes, ids)
             })
             .collect()
     }))
