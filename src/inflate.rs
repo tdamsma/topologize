@@ -1,7 +1,10 @@
 //! Inflate polylines using clipper2-rust, then union the results.
 //! Returns a list of (outer_ring, holes) pairs.
 
-use clipper2_rust::{area, inflate_paths_d, union_subjects_d, EndType, FillRule, JoinType, Point};
+use clipper2_rust::{
+    area, inflate_paths_d, union_subjects_d, ClipperOffset, DeltaCallback64, EndType, FillRule,
+    JoinType, Path64, PathD, Paths64, Point, Point64,
+};
 
 type Pt = (f64, f64);
 
@@ -12,27 +15,78 @@ type Pt = (f64, f64);
 // at 0.10: steps ≈ 7.0  (7 segments — very smooth, more points)
 const ARC_TOL_FACTOR: f64 = 0.2;
 
+/// Inflate a single polyline with per-vertex radii using ClipperOffset + callback.
+/// Returns PathsD-compatible result (Vec<Vec<Point<f64>>>).
+fn inflate_curve_variable(
+    pts: &[Pt],
+    widths: &[f64],
+    arc_tol: f64,
+    decimal_places: i32,
+) -> Vec<Vec<Point<f64>>> {
+    let scale = 10_f64.powi(decimal_places);
+    let path64: Path64 = pts
+        .iter()
+        .map(|&(x, y)| Point64::new((x * scale).round() as i64, (y * scale).round() as i64))
+        .collect();
+    // arc_tol is derived from the global buffer_distance, not per-vertex widths.
+    // End-cap smoothness is therefore approximate when widths vary widely.
+    let mut co = ClipperOffset::new(2.0, arc_tol * scale, false, false);
+    co.add_path(&path64, JoinType::Square, EndType::Round);
+    // Enforce that the widths slice matches the path length. A mismatch means
+    // the caller passed wrong data; clamping would silently produce incorrect
+    // geometry. Callers (Python wrapper and internal Rust code) are responsible
+    // for ensuring lengths match before calling this function.
+    assert_eq!(
+        widths.len(),
+        pts.len(),
+        "inflate_curve_variable: widths.len() ({}) must equal pts.len() ({})",
+        widths.len(),
+        pts.len(),
+    );
+    let widths_owned: Vec<f64> = widths.to_vec();
+    let cb: DeltaCallback64 = Box::new(move |_path: &Path64, _norms: &PathD, curr_idx: usize, _prev_idx: usize| {
+        // SAFETY: lengths are asserted equal above; indexing is always in bounds.
+        widths_owned[curr_idx] * scale
+    });
+    let mut solution64 = Paths64::new();
+    co.execute_with_callback(cb, &mut solution64);
+    solution64
+        .iter()
+        .map(|p64| {
+            p64.iter()
+                .map(|p| Point::new(p.x as f64 / scale, p.y as f64 / scale))
+                .collect()
+        })
+        .collect()
+}
+
 /// Inflate a list of polylines by `buffer_distance`, union all results,
 /// and return as (outer, holes) polygon pairs.
-pub fn inflate(curves: &[Vec<Pt>], buffer_distance: f64) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
+pub fn inflate(
+    curves: &[Vec<Pt>],
+    buffer_distance: f64,
+    per_curve_widths: Option<&[Vec<f64>]>,
+) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
     let arc_tol = buffer_distance * ARC_TOL_FACTOR;
 
     let mut all_inflated: Vec<Vec<Point<f64>>> = Vec::new();
 
-    for pl in curves {
+    for (i, pl) in curves.iter().enumerate() {
         if pl.len() < 2 {
             continue;
         }
-        let path: Vec<Point<f64>> = pl.iter().map(|&(x, y)| Point::new(x, y)).collect();
-        let inflated = inflate_paths_d(
-            &vec![path],
-            buffer_distance,
-            JoinType::Square,
-            EndType::Round,
-            0.0, // miter_limit (unused with Square/Round)
-            6,   // decimal precision for internal integer scaling
-            arc_tol,
-        );
+        let inflated: Vec<Vec<Point<f64>>> =
+            if let Some(widths_all) = per_curve_widths {
+                if i < widths_all.len() && !widths_all[i].is_empty() {
+                    inflate_curve_variable(pl, &widths_all[i], arc_tol, 6)
+                } else {
+                    let path: Vec<Point<f64>> = pl.iter().map(|&(x, y)| Point::new(x, y)).collect();
+                    inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Round, 0.0, 6, arc_tol)
+                }
+            } else {
+                let path: Vec<Point<f64>> = pl.iter().map(|&(x, y)| Point::new(x, y)).collect();
+                inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Round, 0.0, 6, arc_tol)
+            };
         all_inflated.extend(inflated);
     }
 

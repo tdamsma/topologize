@@ -179,7 +179,7 @@ pub fn triangulate_curves(
 ) -> Vec<(Pt, Pt, Pt)> {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
-    let polygons = inflate::inflate(&decimated, buffer_distance);
+    let polygons = inflate::inflate(&decimated, buffer_distance, None);
     let rdp_boundary = buffer_distance * 0.15;
     let max_seg = buffer_distance * 1.5;
     let mut out = Vec::new();
@@ -202,20 +202,31 @@ pub fn triangulate_curves(
 /// The same input decimation applied inside `topologize` is used here so
 /// the polygons match exactly what the skeleton sees.
 ///
+/// Parameters
+/// ----------
+/// curves : list of lists of (x, y) tuples
+/// buffer_distance : float
+/// per_curve_widths : list of lists of float, default None
+///     Per-vertex radii for each curve (one list per curve). If provided,
+///     each sub-list must have the same length as the corresponding curve.
+///     Curves with an empty sub-list (or missing entry) use `buffer_distance`.
+///
 /// Returns
 /// -------
 /// list of (outer, holes) where outer and each hole is a list of (x, y) tuples
 #[pyfunction]
+#[pyo3(signature = (curves, buffer_distance, per_curve_widths=None))]
 pub fn inflate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
+    per_curve_widths: Option<Vec<Vec<f64>>>,
 ) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    inflate::inflate(&decimated, buffer_distance)
+    inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref())
 }
 
 /// Core topologize logic, callable from both single and batch entry points.
@@ -225,6 +236,7 @@ fn topologize_inner(
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
+    per_curve_widths: Option<&[Vec<f64>]>,
 ) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>) {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
@@ -232,7 +244,7 @@ fn topologize_inner(
         .map(|c| decimate_curve(c, min_step))
         .collect();
 
-    let polygons = inflate::inflate(&decimated, buffer_distance);
+    let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths);
 
     let rdp_boundary = buffer_distance * 0.15;
     let max_seg = buffer_distance * 1.5;
@@ -351,6 +363,11 @@ fn topologize_inner(
 ///     Contract short edges between junction nodes (degree ≥ 3) at crossings.
 ///     Threshold = fraction × buffer_distance. Merges 70–90° crossings with
 ///     the default; set to 0.0 to disable and preserve two separate T-junctions.
+/// per_curve_widths : list of lists of float, default None
+///     Per-vertex inflate radii for each curve (one list per curve). Each
+///     sub-list must have the same length as the corresponding curve; curves
+///     with an empty sub-list use `buffer_distance`. Zero widths produce a
+///     degenerate (collapsed) polygon at that vertex.
 ///
 /// Returns
 /// -------
@@ -359,7 +376,7 @@ fn topologize_inner(
 ///   nodes         : list of (x, y) tuples — one per unique chain endpoint
 ///   chain_node_ids: list of (start_id, end_id) pairs indexing into nodes
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
+#[pyo3(signature = (curves, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -367,8 +384,9 @@ pub fn topologize(
     simplification: Option<f64>,
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
+    per_curve_widths: Option<Vec<Vec<f64>>>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction)))
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref())))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
@@ -388,7 +406,7 @@ pub fn topologize_batch(
     Ok(py.detach(|| {
         jobs.par_iter()
             .map(|(curves, bd, simp, tip, jmf)| {
-                topologize_inner(curves, *bd, *simp, *tip, *jmf)
+                topologize_inner(curves, *bd, *simp, *tip, *jmf, None)
             })
             .collect()
     }))

@@ -85,14 +85,19 @@ def triangulate(
 def inflate(
     curves: list[np.ndarray],
     buffer_distance: float,
+    *,
+    per_curve_widths: list[list[float]] | None = None,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """
     Inflate polylines and return the buffer polygons.
 
     Parameters
     ----------
-    curves : list of (N, 2) numpy arrays
+    curves : list of (N, 2) or (N, 3) numpy arrays
+        If an array has shape (N, 3), column 2 is used as per-vertex buffer radius.
     buffer_distance : float
+    per_curve_widths : list of list[float] or None
+        Explicit per-vertex radii; takes precedence over (N, 3) column.
 
     Returns
     -------
@@ -102,7 +107,13 @@ def inflate(
     """
     from topologize._internal import inflate_curves as _inflate
 
-    raw = _inflate(_convert_curves(curves), buffer_distance)
+    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
+
+    kwargs = {}
+    if widths_to_pass is not None:
+        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
+
+    raw = _inflate(_convert_curves(curves_xy), buffer_distance, **kwargs)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
 
@@ -113,6 +124,7 @@ def topologize(
     simplification: float | None = None,
     min_tip_length: float | None = None,
     junction_merge_fraction: float | None = None,
+    per_curve_widths: list[np.ndarray] | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -123,10 +135,13 @@ def topologize(
 
     Parameters
     ----------
-    curves : list of (N, 2) numpy arrays
+    curves : list of (N, 2) or (N, 3) numpy arrays
         Input polylines. Closed curves should repeat the first point at the end.
+        If an array has shape (N, 3), the third column is interpreted as a
+        per-vertex buffer radius, overriding ``buffer_distance`` for that curve.
     buffer_distance : float
         Inflation radius. Use roughly half the typical gap between nearby strokes.
+        Used as the default radius for curves without per-vertex widths.
     simplification : float or None, default None (= buffer_distance / 10)
         RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
         (in input units), applied after projection smoothing.
@@ -138,6 +153,11 @@ def topologize(
         Contract short edges between junction nodes (degree ≥ 3) at crossings.
         Threshold = fraction × buffer_distance. Merges 70–90° crossings with
         the default; set to 0.0 to preserve two separate T-junctions.
+    per_curve_widths : list of array-like or None, default None
+        Explicit per-vertex radii for each curve, as a list with one entry per
+        curve. Each entry is a 1-D array of radii (one per vertex). Takes
+        precedence over widths embedded in (N, 3) curve arrays. Pass an empty
+        list entry (or ``[]``) for a curve that should use ``buffer_distance``.
 
     Returns
     -------
@@ -148,6 +168,8 @@ def topologize(
     """
     from topologize._internal import topologize as _topologize
 
+    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
+
     kwargs = {}
     if simplification is not None:
         kwargs["simplification"] = float(simplification)
@@ -155,14 +177,59 @@ def topologize(
         kwargs["min_tip_length"] = float(min_tip_length)
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
+    if widths_to_pass is not None:
+        kwargs["per_curve_widths"] = [
+            [float(v) for v in w] for w in widths_to_pass
+        ]
 
-    result = _topologize(_convert_curves(curves), buffer_distance, **kwargs)
+    result = _topologize(_convert_curves(curves_xy), buffer_distance, **kwargs)
     return _unpack_result(*result)
 
 
 def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]:
     """Convert numpy arrays to list-of-tuples for Rust."""
     return [[tuple(float(v) for v in pt) for pt in curve] for curve in curves]
+
+
+def _extract_widths(
+    curves: list[np.ndarray],
+    per_curve_widths: list | None,
+) -> tuple[list[np.ndarray], list | None]:
+    """Split (N,3) arrays into xy + widths; validate explicit per_curve_widths.
+
+    Returns (curves_xy, widths_to_pass) where widths_to_pass is None when no
+    per-vertex widths are needed.
+    """
+    curves_xy = []
+    auto_widths = []
+    for c in curves:
+        arr = np.asarray(c, dtype=float)
+        if arr.ndim == 2 and arr.shape[1] == 3:
+            curves_xy.append(arr[:, :2])
+            auto_widths.append(arr[:, 2].tolist())
+        else:
+            curves_xy.append(arr)
+            auto_widths.append([])
+
+    has_auto = any(len(w) > 0 for w in auto_widths)
+    widths_to_pass = per_curve_widths if per_curve_widths is not None else (auto_widths if has_auto else None)
+
+    if per_curve_widths is not None:
+        if len(per_curve_widths) > len(curves_xy):
+            raise ValueError(
+                f"per_curve_widths has {len(per_curve_widths)} entries but only "
+                f"{len(curves_xy)} curves were provided; lengths must match"
+            )
+        for i, (w, c) in enumerate(zip(per_curve_widths, curves_xy)):
+            w_len = len(w)
+            if w_len > 0 and w_len != len(c):
+                raise ValueError(
+                    f"per_curve_widths[{i}] has {w_len} entries but curve {i} "
+                    f"has {len(c)} points; lengths must match (or pass [] to use "
+                    "buffer_distance for that curve)"
+                )
+
+    return curves_xy, widths_to_pass
 
 
 def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
