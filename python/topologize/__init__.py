@@ -63,10 +63,153 @@ class TopologizeResult:
         """Return indices of chains whose start or end node is *node_id*."""
         return [i for i, (s, e) in enumerate(self.chain_node_ids) if s == node_id or e == node_id]
 
+    def plot(
+        self,
+        curves: list[np.ndarray] | None = None,
+        buffer_distance: float | None = None,
+        *,
+        per_curve_widths: list | None = None,
+        show_triangulation: bool = False,
+        title: str = "",
+    ):
+        """Interactive plotly visualization of the topologize result.
+
+        Parameters
+        ----------
+        curves : list of (N, 2) arrays, optional
+            Original input curves (shown as gray lines).
+        buffer_distance : float, optional
+            Buffer distance used; needed to show the inflated boundary.
+        per_curve_widths : list, optional
+            Per-vertex widths (passed to :func:`inflate` for the boundary layer).
+        show_triangulation : bool, default False
+            If True (requires *curves* and *buffer_distance*), overlay the CDT
+            triangulation used internally by the skeleton step.
+        title : str
+            Figure title.
+
+        Returns
+        -------
+        plotly.graph_objects.Figure
+        """
+        try:
+            import plotly.graph_objects as go
+        except ImportError:
+            raise ImportError(
+                "plotly is required for plot(). Install it with: pip install plotly"
+            )
+
+        COLORS = [
+            "#e41a1c", "#377eb8", "#4daf4a", "#ff7f00",
+            "#984ea3", "#a65628", "#f781bf", "#333333",
+        ]
+
+        fig = go.Figure()
+
+        # --- Input curves ---
+        if curves is not None:
+            for i, c in enumerate(c_arr := [np.asarray(c) for c in curves]):
+                fig.add_trace(go.Scatter(
+                    x=c[:, 0], y=c[:, 1], mode="lines",
+                    line=dict(color="gray", width=1),
+                    legendgroup="input",
+                    showlegend=(i == 0), name="Input curves",
+                    hoverinfo="skip",
+                ))
+
+        # --- Input buffer boundary ---
+        if curves is not None and (buffer_distance is not None or per_curve_widths is not None):
+            polys = inflate(curves, buffer_distance, per_curve_widths=per_curve_widths)
+            first_buf = True
+            for outer, holes in polys:
+                for ring in [outer] + holes:
+                    fig.add_trace(go.Scatter(
+                        x=np.append(ring[:, 0], ring[0, 0]),
+                        y=np.append(ring[:, 1], ring[0, 1]),
+                        mode="lines",
+                        line=dict(color="gray", width=1, dash="dot"),
+                        legendgroup="buffer",
+                        showlegend=first_buf, name="Buffer boundary",
+                        hoverinfo="skip",
+                    ))
+                    first_buf = False
+
+        # --- CDT triangulation ---
+        if show_triangulation and curves is not None and (buffer_distance is not None or per_curve_widths is not None):
+            tris = triangulate(curves, buffer_distance, per_curve_widths=per_curve_widths)
+            xs, ys = [], []
+            for (x0, y0), (x1, y1), (x2, y2) in tris:
+                xs.extend([x0, x1, x2, x0, None])
+                ys.extend([y0, y1, y2, y0, None])
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines",
+                line=dict(color="lightblue", width=0.5),
+                legendgroup="cdt",
+                showlegend=True, name="CDT triangles",
+                hoverinfo="skip",
+            ))
+
+        # --- Bead width envelopes ---
+        if self.chain_widths is not None:
+            first_bead = True
+            for i, (chain, widths) in enumerate(zip(self.chains, self.chain_widths)):
+                color = COLORS[i % len(COLORS)]
+                # Compute perpendicular offsets
+                d = np.diff(chain, axis=0)
+                d = np.vstack([d, d[-1:]])  # repeat last direction
+                lengths = np.linalg.norm(d, axis=1, keepdims=True)
+                lengths = np.where(lengths == 0, 1, lengths)
+                d = d / lengths
+                perp = np.column_stack([-d[:, 1], d[:, 0]])
+                half_w = (widths / 2)[:, np.newaxis]
+                left = chain + perp * half_w
+                right = chain - perp * half_w
+                # Closed polygon: left forward, right reversed
+                poly_x = np.concatenate([left[:, 0], right[::-1, 0], left[:1, 0]])
+                poly_y = np.concatenate([left[:, 1], right[::-1, 1], left[:1, 1]])
+                fig.add_trace(go.Scatter(
+                    x=poly_x, y=poly_y, mode="lines",
+                    fill="toself", fillcolor=color, opacity=0.15,
+                    line=dict(color=color, width=0.5),
+                    legendgroup="widths",
+                    showlegend=first_bead, name="Bead width",
+                    hoverinfo="skip",
+                ))
+                first_bead = False
+
+        # --- Centerline chains ---
+        for i, chain in enumerate(self.chains):
+            color = COLORS[i % len(COLORS)]
+            fig.add_trace(go.Scatter(
+                x=chain[:, 0], y=chain[:, 1], mode="lines",
+                line=dict(color=color, width=2.5),
+                legendgroup="chains",
+                showlegend=(i == 0), name="Chains",
+                text=[f"chain {i}"] * len(chain), hoverinfo="text",
+            ))
+
+        # --- Nodes ---
+        degree = self.node_degree
+        fig.add_trace(go.Scatter(
+            x=self.nodes[:, 0], y=self.nodes[:, 1], mode="markers",
+            marker=dict(size=7, color="black"),
+            name="Nodes",
+            text=[f"node {j}, degree {degree[j]}" for j in range(len(self.nodes))],
+            hoverinfo="text",
+        ))
+
+        fig.update_layout(
+            title=title, yaxis_scaleanchor="x",
+            template="plotly_white", width=900, height=650,
+        )
+        return fig
+
 
 def triangulate(
     curves: list[np.ndarray],
-    buffer_distance: float,
+    buffer_distance: float | None = None,
+    *,
+    per_curve_widths: list[list[float]] | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
     """
     Return the CDT triangles used internally by :func:`topologize`.
@@ -76,20 +219,31 @@ def triangulate(
 
     Parameters
     ----------
-    curves : list of (N, 2) numpy arrays
-    buffer_distance : float
+    curves : list of (N, 2) or (N, 3) numpy arrays
+    buffer_distance : float or None
+        Derived from the median of *per_curve_widths* when ``None``.
+    per_curve_widths : list of list[float] or None
+        Per-vertex radii (same semantics as :func:`topologize`).
 
     Returns
     -------
     list of ((x0,y0),(x1,y1),(x2,y2)) tuples — one per triangle.
     """
     from topologize._internal import triangulate_curves as _tri
-    return _tri(_convert_curves(curves), buffer_distance)
+
+    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
+    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
+
+    kwargs = {}
+    if widths_to_pass is not None:
+        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
+
+    return _tri(_convert_curves(curves_xy), bd, **kwargs)
 
 
 def inflate(
     curves: list[np.ndarray],
-    buffer_distance: float,
+    buffer_distance: float | None = None,
     *,
     per_curve_widths: list[list[float]] | None = None,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
@@ -100,7 +254,8 @@ def inflate(
     ----------
     curves : list of (N, 2) or (N, 3) numpy arrays
         If an array has shape (N, 3), column 2 is used as per-vertex buffer radius.
-    buffer_distance : float
+    buffer_distance : float or None
+        Derived from the median of *per_curve_widths* when ``None``.
     per_curve_widths : list of list[float] or None
         Explicit per-vertex radii; takes precedence over (N, 3) column.
 
@@ -113,18 +268,19 @@ def inflate(
     from topologize._internal import inflate_curves as _inflate
 
     curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
+    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
 
     kwargs = {}
     if widths_to_pass is not None:
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
 
-    raw = _inflate(_convert_curves(curves_xy), buffer_distance, **kwargs)
+    raw = _inflate(_convert_curves(curves_xy), bd, **kwargs)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
 
 def topologize(
     curves: list[np.ndarray],
-    buffer_distance: float,
+    buffer_distance: float | None = None,
     *,
     simplification: float | None = None,
     min_tip_length: float | None = None,
@@ -145,9 +301,10 @@ def topologize(
         Input polylines. Closed curves should repeat the first point at the end.
         If an array has shape (N, 3), the third column is interpreted as a
         per-vertex buffer radius, overriding ``buffer_distance`` for that curve.
-    buffer_distance : float
+    buffer_distance : float or None
         Inflation radius. Use roughly half the typical gap between nearby strokes.
-        Used as the default radius for curves without per-vertex widths.
+        When ``None`` and *per_curve_widths* is provided, derived automatically
+        from the median of all per-vertex widths.
     simplification : float or None, default None (= buffer_distance / 10)
         RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
         (in input units), applied after projection smoothing.
@@ -181,6 +338,7 @@ def topologize(
     from topologize._internal import topologize as _topologize
 
     curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
+    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
 
     kwargs = {}
     if simplification is not None:
@@ -196,7 +354,7 @@ def topologize(
     if compute_widths:
         kwargs["compute_widths"] = True
 
-    raw = _topologize(_convert_curves(curves_xy), buffer_distance, **kwargs)
+    raw = _topologize(_convert_curves(curves_xy), bd, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)
 
 
@@ -244,6 +402,29 @@ def _extract_widths(
                 )
 
     return curves_xy, widths_to_pass
+
+
+def _resolve_buffer_distance(
+    buffer_distance: float | None,
+    widths_to_pass: list | None,
+) -> float:
+    """Return an effective buffer_distance.
+
+    When *buffer_distance* is ``None``, derive it from the median of all
+    per-vertex widths. Raises if no width information is available.
+    """
+    if buffer_distance is not None:
+        return float(buffer_distance)
+    if widths_to_pass is None:
+        raise ValueError(
+            "buffer_distance is required when per_curve_widths is not provided"
+        )
+    all_w = [v for w in widths_to_pass for v in w]
+    if not all_w:
+        raise ValueError(
+            "buffer_distance is required when all per_curve_widths entries are empty"
+        )
+    return float(np.median(all_w))
 
 
 def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:

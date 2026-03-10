@@ -173,13 +173,15 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 /// Returns a flat list of triangles across all polygons, each as
 /// ((x0,y0),(x1,y1),(x2,y2)).
 #[pyfunction]
+#[pyo3(signature = (curves, buffer_distance, per_curve_widths=None))]
 pub fn triangulate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
+    per_curve_widths: Option<Vec<Vec<f64>>>,
 ) -> Vec<(Pt, Pt, Pt)> {
     let min_step = buffer_distance * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
-    let polygons = inflate::inflate(&decimated, buffer_distance, None);
+    let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref());
     let rdp_boundary = buffer_distance * 0.15;
     let max_seg = buffer_distance * 1.5;
     let mut out = Vec::new();
@@ -269,7 +271,7 @@ fn topologize_inner(
         if outer.len() < 3 {
             continue;
         }
-        all_segments.extend(skeleton_cdt::skeletonize(outer, holes, buffer_distance));
+        all_segments.extend(skeleton_cdt::skeletonize(outer, holes));
     }
 
     if all_segments.is_empty() {
