@@ -51,13 +51,10 @@ def plot(curves, chains, buffer_distance, title=""):
 p1 = np.array([[0.0, 2.0], [10.0, 0.0], [5.0, 0.1], [5.0, 5.0]])
 
 # open polyline resampled to 24 points
-import shapely  # noqa: E402
-_p2 = shapely.LineString([[0, 6], [1, 4], [2, 0]])
-p2 = np.array(
-    shapely.LineString(
-        _p2.interpolate(np.linspace(0, 1, 24), normalized=True)
-    ).coords
-)
+_p2 = np.array([[0.0, 6.0], [1.0, 4.0], [2.0, 0.0]])
+_p2_dists = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(_p2, axis=0), axis=1))])
+_t = np.linspace(0, _p2_dists[-1], 24)
+p2 = np.column_stack([np.interp(_t, _p2_dists, _p2[:, 0]), np.interp(_t, _p2_dists, _p2[:, 1])])
 
 # circle (closed ring)
 _cc, _cr = np.array([13.0, 1.0]), np.linalg.norm(np.array([13.0, 1.0]) - [10.0, 0.0])
