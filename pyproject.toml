@@ -37,6 +37,9 @@ features = ["pyo3/extension-module"]
 module-name = "topologize._internal"
 python-source = "python"
 
+[tool.pytest.ini_options]
+addopts = "-rP"
+
 [dependency-groups]
 dev = [
     "kaleido>=1.2.0",
