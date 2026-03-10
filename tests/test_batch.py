@@ -1,5 +1,7 @@
 """Tests for topologize_batch parallel processing."""
 
+import time
+
 import numpy as np
 from topologize import topologize, topologize_batch
 
@@ -41,6 +43,40 @@ def test_batch_single_item():
     single = topologize(curves, buffer_distance=0.5)
     assert len(batch) == 1
     assert len(batch[0].chains) == len(single.chains)
+
+
+def test_batch_faster_than_sequential():
+    """Batch should be faster than a Python loop over the same inputs."""
+    # Generate enough curve-sets so wall-clock difference is measurable.
+    rng = np.random.default_rng(42)
+    curve_sets = []
+    for _ in range(50):
+        n_curves = rng.integers(2, 5)
+        curves = []
+        for _ in range(n_curves):
+            pts = rng.uniform(0, 100, size=(20, 2))
+            # make it a polyline (cumulative sum gives a random walk)
+            pts = np.cumsum(pts, axis=0)
+            curves.append(pts)
+        curve_sets.append(curves)
+
+    bd = 2.0
+
+    # Warm up (first call may include one-time rayon thread-pool init)
+    topologize_batch(curve_sets[:2], bd)
+
+    t0 = time.perf_counter()
+    for cs in curve_sets:
+        topologize(cs, buffer_distance=bd)
+    t_seq = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    topologize_batch(curve_sets, bd)
+    t_batch = time.perf_counter() - t0
+
+    assert t_batch < t_seq, (
+        f"batch ({t_batch:.3f}s) should be faster than sequential ({t_seq:.3f}s)"
+    )
 
 
 def test_batch_kwargs_forwarded():
