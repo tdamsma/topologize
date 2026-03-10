@@ -108,7 +108,7 @@ class TopologizeResult:
 
         # --- Input curves ---
         if curves is not None:
-            for i, c in enumerate(c_arr := [np.asarray(c) for c in curves]):
+            for i, c in enumerate([np.asarray(c) for c in curves]):
                 fig.add_trace(go.Scatter(
                     x=c[:, 0], y=c[:, 1], mode="lines",
                     line=dict(color="gray", width=1),
