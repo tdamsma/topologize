@@ -231,9 +231,9 @@ def _resolve_inflation_radius(
     elif isinstance(inflation_radius, list):
         # Per-vertex mode
         curves_xy, _ = _extract_widths(curves, None)
-        if len(inflation_radius) > len(curves_xy):
+        if len(inflation_radius) != len(curves_xy):
             raise ValueError(
-                f"inflation_radius has {len(inflation_radius)} entries but only "
+                f"inflation_radius has {len(inflation_radius)} entries but "
                 f"{len(curves_xy)} curves were provided; lengths must match"
             )
         pcw: list[list[float]] = []

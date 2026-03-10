@@ -50,7 +50,7 @@ curves = [p1, p2, circle, star]
 # %%
 result = topologize(curves, inflation_radius=0.6)
 print(f"{len(result.chains)} chains, {sum(len(c) for c in result.chains)} total points")
-result.plot(curves, inflation_radius=0.6, title="Simple shapes")
+result.plot(curves, inflation_radius=0.6, title="Simple shapes").show()
 
 # %% [markdown]
 # ## Example 2: effect of inflation_radius

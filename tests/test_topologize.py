@@ -298,6 +298,17 @@ def test_inflate_too_many_entries_raises():
         inflate(curves, inflation_radius=widths)
 
 
+def test_inflate_fewer_entries_raises():
+    """Fewer inflation_radius entries than curves raises ValueError."""
+    curves = [
+        np.array([[0.0, 0.0], [5.0, 0.0]]),
+        np.array([[0.0, 3.0], [5.0, 3.0]]),
+    ]
+    widths = [np.array([1.0, 1.0])]  # 1 entry for 2 curves
+    with pytest.raises(ValueError, match="inflation_radius"):
+        inflate(curves, inflation_radius=widths)
+
+
 def test_topologize_with_n3_curves():
     """topologize accepts (N,3) curves and produces valid output."""
     curve1 = np.array([[0.0, 0.0, 0.5], [10.0, 0.0, 0.5]])
