@@ -25,7 +25,7 @@ def test_batch_matches_sequential():
     batch_results = topologize_batch([TopologizeJob(cs, bd) for cs in curve_sets])
     assert len(batch_results) == len(curve_sets)
     for cs, br in zip(curve_sets, batch_results):
-        sr = topologize(cs, buffer_distance=bd)
+        sr = topologize(cs, inflation_radius=bd)
         assert len(br.chains) == len(sr.chains)
         assert br.nodes.shape == sr.nodes.shape
         assert len(br.chain_node_ids) == len(sr.chain_node_ids)
@@ -41,14 +41,13 @@ def test_batch_empty_input():
 def test_batch_single_item():
     curves = [line(0, 0, 10, 0)]
     batch = topologize_batch([TopologizeJob(curves, 0.5)])
-    single = topologize(curves, buffer_distance=0.5)
+    single = topologize(curves, inflation_radius=0.5)
     assert len(batch) == 1
     assert len(batch[0].chains) == len(single.chains)
 
 
 def test_batch_faster_than_sequential():
     """Batch should be faster than a Python loop over the same inputs."""
-    # Generate enough curve-sets so wall-clock difference is measurable.
     rng = np.random.default_rng(42)
     curve_sets = []
     for _ in range(50):
@@ -56,7 +55,6 @@ def test_batch_faster_than_sequential():
         curves = []
         for _ in range(n_curves):
             pts = rng.uniform(0, 100, size=(20, 2))
-            # make it a polyline (cumulative sum gives a random walk)
             pts = np.cumsum(pts, axis=0)
             curves.append(pts)
         curve_sets.append(curves)
@@ -69,7 +67,7 @@ def test_batch_faster_than_sequential():
 
     t0 = time.perf_counter()
     for cs in curve_sets:
-        topologize(cs, buffer_distance=bd)
+        topologize(cs, inflation_radius=bd)
     t_seq = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -97,7 +95,7 @@ def test_batch_per_job_params():
     for job, br in zip(jobs, batch_results):
         sr = topologize(
             job.curves,
-            buffer_distance=job.buffer_distance,
+            inflation_radius=job.inflation_radius,
             simplification=job.simplification,
             min_tip_length=job.min_tip_length,
             junction_merge_fraction=job.junction_merge_fraction,

@@ -34,16 +34,16 @@ _star_open = _sc + np.column_stack([_sr * np.cos(_sa), _sr * np.sin(_sa)])
 star_pts = np.vstack([_star_open, _star_open[:1]])
 
 curves = [p_pts, p2_pts, circle_pts, star_pts]
-buffer_distance = 0.6
+inflation_radius = 0.6
 
 # %% --- run ---
 
-result = topologize(curves, buffer_distance)
+result = topologize(curves, inflation_radius)
 print(f"topologize: {len(result.chains)} chains, {sum(len(c) for c in result.chains)} pts")
 
 # %% --- plot ---
 
-fig = result.plot(curves, buffer_distance, title=f"Centerline — buf={buffer_distance}")
+fig = result.plot(curves, inflation_radius, title=f"Centerline — buf={inflation_radius}")
 tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
 fig.write_html(tmp.name)
 subprocess.Popen(["open", tmp.name])

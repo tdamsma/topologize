@@ -128,10 +128,10 @@ def load_svg(path, sample_distance=5.0):
 # %%
 
 
-def plot(result, curves, buffer_distance, show_cdt=False):
+def plot(result, curves, inflation_radius, show_cdt=False):
     chains = result.chains
-    title = f"Centerline — buf={buffer_distance}  |  {len(chains)} chains, {sum(len(c) for c in chains)} pts"
-    fig = result.plot(curves, buffer_distance, show_triangulation=show_cdt, title=title)
+    title = f"Centerline — buf={inflation_radius}  |  {len(chains)} chains, {sum(len(c) for c in chains)} pts"
+    fig = result.plot(curves, inflation_radius, show_triangulation=show_cdt, title=title)
     fig.update_layout(
         yaxis_autorange="reversed",
         width=1200,
@@ -148,7 +148,7 @@ def plot(result, curves, buffer_distance, show_cdt=False):
 def main():
     parser = argparse.ArgumentParser(description="SVG centerline extraction.")
     parser.add_argument("svg", nargs="?", help="Path to input SVG file")
-    parser.add_argument("--buffer", type=float, default=20.0, help="Buffer distance (default: 20)")
+    parser.add_argument("--buffer", type=float, default=20.0, help="Inflation radius (default: 20)")
     parser.add_argument("--cdt", action="store_true", help="Overlay the CDT triangulation")
     parser.add_argument("--junction-merge-fraction", type=float, default=None,
                         help="Junction merge fraction (default: 1.5; set 0 to disable)")

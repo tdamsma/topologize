@@ -34,13 +34,13 @@ topologize_batch([TopologizeJob(curve_sets[0], bd)])
 
 # %% Sequential
 t0 = time.perf_counter()
-[topologize(cs, buffer_distance=bd) for cs in curve_sets]
+[topologize(cs, inflation_radius=bd) for cs in curve_sets]
 t_seq = time.perf_counter() - t0
 
 # %% ThreadPoolExecutor (GIL released in single topologize)
 t0 = time.perf_counter()
 with ThreadPoolExecutor() as pool:
-    list(pool.map(lambda cs: topologize(cs, buffer_distance=bd), curve_sets))
+    list(pool.map(lambda cs: topologize(cs, inflation_radius=bd), curve_sets))
 t_threads = time.perf_counter() - t0
 
 # %% topologize_batch (Rayon parallel)
@@ -57,7 +57,7 @@ print(f"{'topologize_batch':<25} {t_batch:>7.3f}s {t_seq / t_batch:>7.1f}x")
 
 # %% show result of one job
 cs = curve_sets[0]
-result = topologize(cs, buffer_distance=bd)
+result = topologize(cs, inflation_radius=bd)
 result.plot(cs, bd, title="Example curve-set and its topology").show()
 
 # %%

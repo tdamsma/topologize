@@ -1,7 +1,7 @@
 # %% [markdown]
 # # topologize — getting started
 #
-# `topologize` takes a set of polylines, inflates them by a `buffer_distance`,
+# `topologize` takes a set of polylines, inflates them by an `inflation_radius`,
 # and returns the medial axis as maximal non-branching chains.
 #
 # **Typical use case:** clean up hand-drawn or over-sampled strokes into a
@@ -48,21 +48,20 @@ star = np.vstack([_star, _star[:1]])
 curves = [p1, p2, circle, star]
 
 # %%
-buffer_distance = 0.6
-result = topologize(curves, buffer_distance)
+result = topologize(curves, inflation_radius=0.6)
 print(f"{len(result.chains)} chains, {sum(len(c) for c in result.chains)} total points")
-result.plot(curves, buffer_distance, title="Simple shapes")
+result.plot(curves, inflation_radius=0.6, title="Simple shapes")
 
 # %% [markdown]
-# ## Example 2: effect of buffer_distance
+# ## Example 2: effect of inflation_radius
 #
-# A larger `buffer_distance` merges nearby strokes more aggressively,
+# A larger `inflation_radius` merges nearby strokes more aggressively,
 # producing fewer but smoother chains.
 
 # %%
-for bd in [0.3, 0.6, 1.2]:
-    r = topologize(curves, bd)
-    r.plot(curves, bd, title=f"buffer_distance={bd}  ({len(r.chains)} chains)").show()
+for ir in [0.3, 0.6, 1.2]:
+    r = topologize(curves, ir)
+    r.plot(curves, ir, title=f"inflation_radius={ir}  ({len(r.chains)} chains)").show()
 
 # %% [markdown]
 # ## Example 3: parallel lines merging into one
@@ -74,9 +73,9 @@ for bd in [0.3, 0.6, 1.2]:
 line_a = np.column_stack([np.linspace(0, 10, 50), np.zeros(50)])
 line_b = np.column_stack([np.linspace(0, 10, 50), np.ones(50) * 0.8])
 
-for bd in [0.3, 0.6]:
-    r = topologize([line_a, line_b], bd)
-    r.plot([line_a, line_b], bd, title=f"buffer_distance={bd}  ({len(r.chains)} chain{'s' if len(r.chains) != 1 else ''})").show()
+for ir in [0.3, 0.6]:
+    r = topologize([line_a, line_b], ir)
+    r.plot([line_a, line_b], ir, title=f"inflation_radius={ir}  ({len(r.chains)} chain{'s' if len(r.chains) != 1 else ''})").show()
 
 # %% [markdown]
 # ## Example 4: inspecting chain geometry
@@ -84,7 +83,7 @@ for bd in [0.3, 0.6]:
 # Each chain is a plain `(N, 2)` numpy array — easy to work with downstream.
 
 # %%
-chains = topologize(curves, buffer_distance=0.6).chains
+chains = topologize(curves, inflation_radius=0.6).chains
 
 for i, chain in enumerate(chains):
     length = np.sum(np.linalg.norm(np.diff(chain, axis=0), axis=1))

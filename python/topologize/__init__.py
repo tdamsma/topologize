@@ -13,15 +13,19 @@ class TopologizeJob:
     ----------
     curves : list of (N, 2) numpy arrays
         Input polylines for this job.
-    buffer_distance : float
-        Inflation radius.
+    inflation_radius : float or list of array-like
+        Uniform radius (float) or per-vertex radii (list of arrays).
+    feature_size : float or None
+        Scale parameter for derived thresholds. Defaults to
+        ``inflation_radius`` (float) or ``median(all widths)`` (list).
     simplification : float or None
     min_tip_length : float or None
     junction_merge_fraction : float or None
     """
 
     curves: list[np.ndarray]
-    buffer_distance: float
+    inflation_radius: float | list[np.ndarray]
+    feature_size: float | None = None
     simplification: float | None = None
     min_tip_length: float | None = None
     junction_merge_fraction: float | None = None
@@ -66,9 +70,9 @@ class TopologizeResult:
     def plot(
         self,
         curves: list[np.ndarray] | None = None,
-        buffer_distance: float | None = None,
+        inflation_radius: float | list | None = None,
         *,
-        per_curve_widths: list | None = None,
+        feature_size: float | None = None,
         show_triangulation: bool = False,
         title: str = "",
     ):
@@ -78,12 +82,13 @@ class TopologizeResult:
         ----------
         curves : list of (N, 2) arrays, optional
             Original input curves (shown as gray lines).
-        buffer_distance : float, optional
-            Buffer distance used; needed to show the inflated boundary.
-        per_curve_widths : list, optional
-            Per-vertex widths (passed to :func:`inflate` for the boundary layer).
+        inflation_radius : float or list, optional
+            Inflation radius used; needed to show the inflated boundary.
+            Float for uniform, list of arrays for per-vertex widths.
+        feature_size : float, optional
+            Override the feature size used for inflate boundary display.
         show_triangulation : bool, default False
-            If True (requires *curves* and *buffer_distance*), overlay the CDT
+            If True (requires *curves* and *inflation_radius*), overlay the CDT
             triangulation used internally by the skeleton step.
         title : str
             Figure title.
@@ -118,8 +123,8 @@ class TopologizeResult:
                 ))
 
         # --- Input buffer boundary ---
-        if curves is not None and (buffer_distance is not None or per_curve_widths is not None):
-            polys = inflate(curves, buffer_distance, per_curve_widths=per_curve_widths)
+        if curves is not None and inflation_radius is not None:
+            polys = inflate(curves, inflation_radius, feature_size=feature_size)
             first_buf = True
             for outer, holes in polys:
                 for ring in [outer] + holes:
@@ -135,8 +140,8 @@ class TopologizeResult:
                     first_buf = False
 
         # --- CDT triangulation ---
-        if show_triangulation and curves is not None and (buffer_distance is not None or per_curve_widths is not None):
-            tris = triangulate(curves, buffer_distance, per_curve_widths=per_curve_widths)
+        if show_triangulation and curves is not None and inflation_radius is not None:
+            tris = triangulate(curves, inflation_radius, feature_size=feature_size)
             xs, ys = [], []
             for (x0, y0), (x1, y1), (x2, y2) in tris:
                 xs.extend([x0, x1, x2, x0, None])
@@ -205,11 +210,76 @@ class TopologizeResult:
         return fig
 
 
+def _resolve_inflation_radius(
+    inflation_radius: float | list,
+    curves: list[np.ndarray],
+) -> tuple[list[np.ndarray], float, list[list[float]] | None]:
+    """Resolve inflation_radius into (curves_xy, buffer_distance, per_curve_widths).
+
+    Also handles (N,3) curve arrays by splitting off the width column.
+
+    Returns
+    -------
+    curves_xy : list of (N,2) arrays
+    buffer_distance : float — the uniform radius for inflate_paths_d calls
+    per_curve_widths : list of list[float] or None
+    """
+    if isinstance(inflation_radius, (int, float)):
+        # Uniform mode: also handle (N,3) arrays for backward compat
+        curves_xy, widths = _extract_widths(curves, None)
+        return curves_xy, float(inflation_radius), widths
+    elif isinstance(inflation_radius, list):
+        # Per-vertex mode
+        curves_xy, _ = _extract_widths(curves, None)
+        if len(inflation_radius) > len(curves_xy):
+            raise ValueError(
+                f"inflation_radius has {len(inflation_radius)} entries but only "
+                f"{len(curves_xy)} curves were provided; lengths must match"
+            )
+        pcw: list[list[float]] = []
+        for i, w in enumerate(inflation_radius):
+            w_arr = np.asarray(w, dtype=float).ravel()
+            if len(w_arr) > 0 and i < len(curves_xy) and len(w_arr) != len(curves_xy[i]):
+                raise ValueError(
+                    f"inflation_radius[{i}] has {len(w_arr)} entries but curve {i} "
+                    f"has {len(curves_xy[i])} points; lengths must match"
+                )
+            pcw.append(w_arr.tolist())
+        # Derive a uniform buffer_distance from median of all widths
+        all_w = [v for w in pcw for v in w]
+        if not all_w:
+            raise ValueError("inflation_radius list has no width values")
+        bd = float(np.median(all_w))
+        return curves_xy, bd, pcw
+    else:
+        raise TypeError(
+            f"inflation_radius must be a float or list of arrays, got {type(inflation_radius).__name__}"
+        )
+
+
+def _resolve_feature_size(
+    feature_size: float | None,
+    inflation_radius: float | list,
+    per_curve_widths: list[list[float]] | None,
+) -> float:
+    """Compute the effective feature_size."""
+    if feature_size is not None:
+        return float(feature_size)
+    if isinstance(inflation_radius, (int, float)):
+        return float(inflation_radius)
+    # Per-vertex mode: median of all widths
+    if per_curve_widths is not None:
+        all_w = [v for w in per_curve_widths for v in w]
+        if all_w:
+            return float(np.median(all_w))
+    raise ValueError("feature_size is required when inflation_radius contains no width values")
+
+
 def triangulate(
     curves: list[np.ndarray],
-    buffer_distance: float | None = None,
+    inflation_radius: float | list[np.ndarray],
     *,
-    per_curve_widths: list[list[float]] | None = None,
+    feature_size: float | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
     """
     Return the CDT triangles used internally by :func:`topologize`.
@@ -220,10 +290,11 @@ def triangulate(
     Parameters
     ----------
     curves : list of (N, 2) or (N, 3) numpy arrays
-    buffer_distance : float or None
-        Derived from the median of *per_curve_widths* when ``None``.
-    per_curve_widths : list of list[float] or None
-        Per-vertex radii (same semantics as :func:`topologize`).
+    inflation_radius : float or list of array-like
+        Uniform radius (float) or per-vertex radii (list of arrays).
+    feature_size : float, optional
+        Scale parameter for derived thresholds. Defaults to
+        ``inflation_radius`` (float) or ``median(all widths)`` (list).
 
     Returns
     -------
@@ -231,21 +302,21 @@ def triangulate(
     """
     from topologize._internal import triangulate_curves as _tri
 
-    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
-    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
+    curves_xy, bd, pcw = _resolve_inflation_radius(inflation_radius, curves)
+    fs = _resolve_feature_size(feature_size, inflation_radius, pcw)
 
     kwargs = {}
-    if widths_to_pass is not None:
-        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
+    if pcw is not None:
+        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
 
-    return _tri(_convert_curves(curves_xy), bd, **kwargs)
+    return _tri(_convert_curves(curves_xy), bd, fs, **kwargs)
 
 
 def inflate(
     curves: list[np.ndarray],
-    buffer_distance: float | None = None,
+    inflation_radius: float | list[np.ndarray],
     *,
-    per_curve_widths: list[list[float]] | None = None,
+    feature_size: float | None = None,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """
     Inflate polylines and return the buffer polygons.
@@ -254,10 +325,11 @@ def inflate(
     ----------
     curves : list of (N, 2) or (N, 3) numpy arrays
         If an array has shape (N, 3), column 2 is used as per-vertex buffer radius.
-    buffer_distance : float or None
-        Derived from the median of *per_curve_widths* when ``None``.
-    per_curve_widths : list of list[float] or None
-        Explicit per-vertex radii; takes precedence over (N, 3) column.
+    inflation_radius : float or list of array-like
+        Uniform radius (float) or per-vertex radii (list of arrays).
+    feature_size : float, optional
+        Scale parameter for derived thresholds. Defaults to
+        ``inflation_radius`` (float) or ``median(all widths)`` (list).
 
     Returns
     -------
@@ -267,31 +339,31 @@ def inflate(
     """
     from topologize._internal import inflate_curves as _inflate
 
-    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
-    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
+    curves_xy, bd, pcw = _resolve_inflation_radius(inflation_radius, curves)
+    fs = _resolve_feature_size(feature_size, inflation_radius, pcw)
 
     kwargs = {}
-    if widths_to_pass is not None:
-        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in widths_to_pass]
+    if pcw is not None:
+        kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
 
-    raw = _inflate(_convert_curves(curves_xy), bd, **kwargs)
+    raw = _inflate(_convert_curves(curves_xy), bd, fs, **kwargs)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
 
 def topologize(
     curves: list[np.ndarray],
-    buffer_distance: float | None = None,
+    inflation_radius: float | list[np.ndarray],
     *,
+    feature_size: float | None = None,
     simplification: float | None = None,
     min_tip_length: float | None = None,
     junction_merge_fraction: float | None = None,
-    per_curve_widths: list[np.ndarray] | None = None,
     compute_widths: bool = False,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
 
-    Inflates all input curves by `buffer_distance`, unions the resulting
+    Inflates all input curves by ``inflation_radius``, unions the resulting
     polygons, skeletonizes each polygon via constrained Delaunay triangulation
     midpoints, and returns the medial axis as maximal non-branching polylines.
 
@@ -300,45 +372,43 @@ def topologize(
     curves : list of (N, 2) or (N, 3) numpy arrays
         Input polylines. Closed curves should repeat the first point at the end.
         If an array has shape (N, 3), the third column is interpreted as a
-        per-vertex buffer radius, overriding ``buffer_distance`` for that curve.
-    buffer_distance : float or None
-        Inflation radius. Use roughly half the typical gap between nearby strokes.
-        When ``None`` and *per_curve_widths* is provided, derived automatically
-        from the median of all per-vertex widths.
-    simplification : float or None, default None (= buffer_distance / 10)
+        per-vertex buffer radius.
+    inflation_radius : float or list of array-like
+        Inflation radius. Either a single float for uniform width, or a list of
+        per-vertex radius arrays (one per curve) for variable width.
+    feature_size : float or None, default None
+        Scale parameter for all derived thresholds (simplification, tip pruning,
+        junction merging, etc.). Defaults to ``inflation_radius`` (when float) or
+        ``median(all widths)`` (when list).
+    simplification : float or None, default None (= feature_size / 10)
         RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
         (in input units), applied after projection smoothing.
         Larger values produce fewer output points; 0.0 disables.
-    min_tip_length : float or None, default None (= buffer_distance * 2)
+    min_tip_length : float or None, default None (= feature_size * 2)
         Terminal chains shorter than this are pruned before chain extraction.
         Set to 0.0 to disable pruning.
     junction_merge_fraction : float or None, default None (= 1.5)
-        Contract short edges between junction nodes (degree ≥ 3) at crossings.
-        Threshold = fraction × buffer_distance. Merges 70–90° crossings with
+        Contract short edges between junction nodes (degree >= 3) at crossings.
+        Threshold = fraction x feature_size. Merges 70-90 deg crossings with
         the default; set to 0.0 to preserve two separate T-junctions.
-    per_curve_widths : list of array-like or None, default None
-        Explicit per-vertex radii for each curve, as a list with one entry per
-        curve. Each entry is a 1-D array of radii (one per vertex). Takes
-        precedence over widths embedded in (N, 3) curve arrays. Pass an empty
-        list entry (or ``[]``) for a curve that should use ``buffer_distance``.
     compute_widths : bool, default False
         If True, populate ``chain_widths`` with the estimated contour width at
-        each chain point (2 × distance to the nearest inflated polygon boundary
-        vertex). Disabled by default to avoid the O(S × B) scan overhead.
+        each chain point (2 x distance to the nearest inflated polygon boundary
+        vertex). Disabled by default to avoid the O(S x B) scan overhead.
 
     Returns
     -------
     TopologizeResult
-        ``.chains``        — list of (M, 2) arrays, one per non-branching segment
-        ``.nodes``         — (K, 2) array of unique chain-endpoint positions
-        ``.chain_node_ids``— list of (start_id, end_id) per chain
-        ``.chain_widths``  — list of (M,) arrays when ``compute_widths=True``,
+        ``.chains``        -- list of (M, 2) arrays, one per non-branching segment
+        ``.nodes``         -- (K, 2) array of unique chain-endpoint positions
+        ``.chain_node_ids``-- list of (start_id, end_id) per chain
+        ``.chain_widths``  -- list of (M,) arrays when ``compute_widths=True``,
                              else None
     """
     from topologize._internal import topologize as _topologize
 
-    curves_xy, widths_to_pass = _extract_widths(curves, per_curve_widths)
-    bd = _resolve_buffer_distance(buffer_distance, widths_to_pass)
+    curves_xy, bd, pcw = _resolve_inflation_radius(inflation_radius, curves)
+    fs = _resolve_feature_size(feature_size, inflation_radius, pcw)
 
     kwargs = {}
     if simplification is not None:
@@ -347,14 +417,14 @@ def topologize(
         kwargs["min_tip_length"] = float(min_tip_length)
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
-    if widths_to_pass is not None:
+    if pcw is not None:
         kwargs["per_curve_widths"] = [
-            [float(v) for v in w] for w in widths_to_pass
+            [float(v) for v in w] for w in pcw
         ]
     if compute_widths:
         kwargs["compute_widths"] = True
 
-    raw = _topologize(_convert_curves(curves_xy), bd, **kwargs)
+    raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)
 
 
@@ -366,11 +436,11 @@ def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]
 def _extract_widths(
     curves: list[np.ndarray],
     per_curve_widths: list | None,
-) -> tuple[list[np.ndarray], list | None]:
-    """Split (N,3) arrays into xy + widths; validate explicit per_curve_widths.
+) -> tuple[list[np.ndarray], list[list[float]] | None]:
+    """Split (N,3) arrays into xy + widths.
 
-    Returns (curves_xy, widths_to_pass) where widths_to_pass is None when no
-    per-vertex widths are needed.
+    Returns (curves_xy, widths) where widths is None when no
+    per-vertex widths are available.
     """
     curves_xy = []
     auto_widths = []
@@ -384,47 +454,13 @@ def _extract_widths(
             auto_widths.append([])
 
     has_auto = any(len(w) > 0 for w in auto_widths)
-    widths_to_pass = per_curve_widths if per_curve_widths is not None else (auto_widths if has_auto else None)
 
     if per_curve_widths is not None:
-        if len(per_curve_widths) > len(curves_xy):
-            raise ValueError(
-                f"per_curve_widths has {len(per_curve_widths)} entries but only "
-                f"{len(curves_xy)} curves were provided; lengths must match"
-            )
-        for i, (w, c) in enumerate(zip(per_curve_widths, curves_xy)):
-            w_len = len(w)
-            if w_len > 0 and w_len != len(c):
-                raise ValueError(
-                    f"per_curve_widths[{i}] has {w_len} entries but curve {i} "
-                    f"has {len(c)} points; lengths must match (or pass [] to use "
-                    "buffer_distance for that curve)"
-                )
-
-    return curves_xy, widths_to_pass
-
-
-def _resolve_buffer_distance(
-    buffer_distance: float | None,
-    widths_to_pass: list | None,
-) -> float:
-    """Return an effective buffer_distance.
-
-    When *buffer_distance* is ``None``, derive it from the median of all
-    per-vertex widths. Raises if no width information is available.
-    """
-    if buffer_distance is not None:
-        return float(buffer_distance)
-    if widths_to_pass is None:
-        raise ValueError(
-            "buffer_distance is required when per_curve_widths is not provided"
-        )
-    all_w = [v for w in widths_to_pass for v in w]
-    if not all_w:
-        raise ValueError(
-            "buffer_distance is required when all per_curve_widths entries are empty"
-        )
-    return float(np.median(all_w))
+        return curves_xy, per_curve_widths
+    elif has_auto:
+        return curves_xy, auto_widths
+    else:
+        return curves_xy, None
 
 
 def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
@@ -468,15 +504,17 @@ def topologize_batch(
     """
     from topologize._internal import topologize_batch as _batch
 
-    packed = [
-        (
-            _convert_curves(job.curves),
-            job.buffer_distance,
+    packed = []
+    for job in jobs:
+        curves_xy, bd, pcw = _resolve_inflation_radius(job.inflation_radius, job.curves)
+        fs = _resolve_feature_size(job.feature_size, job.inflation_radius, pcw)
+        packed.append((
+            _convert_curves(curves_xy),
+            bd,
+            fs,
             job.simplification,
             job.min_tip_length,
             job.junction_merge_fraction,
-        )
-        for job in jobs
-    ]
+        ))
     raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]
