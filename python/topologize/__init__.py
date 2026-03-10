@@ -6,6 +6,28 @@ import numpy as np
 
 
 @dataclass
+class TopologizeJob:
+    """Input specification for a single :func:`topologize_batch` job.
+
+    Attributes
+    ----------
+    curves : list of (N, 2) numpy arrays
+        Input polylines for this job.
+    buffer_distance : float
+        Inflation radius.
+    simplification : float or None
+    min_tip_length : float or None
+    junction_merge_fraction : float or None
+    """
+
+    curves: list[np.ndarray]
+    buffer_distance: float
+    simplification: float | None = None
+    min_tip_length: float | None = None
+    junction_merge_fraction: float | None = None
+
+
+@dataclass
 class TopologizeResult:
     """Result of :func:`topologize`.
 
@@ -57,10 +79,7 @@ def triangulate(
     list of ((x0,y0),(x1,y1),(x2,y2)) tuples — one per triangle.
     """
     from topologize._internal import triangulate_curves as _tri
-    return _tri(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-    )
+    return _tri(_convert_curves(curves), buffer_distance)
 
 
 def inflate(
@@ -83,10 +102,7 @@ def inflate(
     """
     from topologize._internal import inflate_curves as _inflate
 
-    raw = _inflate(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-    )
+    raw = _inflate(_convert_curves(curves), buffer_distance)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
 
 
@@ -140,14 +156,52 @@ def topologize(
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
 
-    raw_chains, raw_nodes, raw_chain_node_ids = _topologize(
-        [[tuple(float(v) for v in pt) for pt in curve] for curve in curves],
-        buffer_distance,
-        **kwargs,
-    )
+    result = _topologize(_convert_curves(curves), buffer_distance, **kwargs)
+    return _unpack_result(*result)
 
+
+def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]:
+    """Convert numpy arrays to list-of-tuples for Rust."""
+    return [[tuple(float(v) for v in pt) for pt in curve] for curve in curves]
+
+
+def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
+    """Unpack a raw Rust result tuple into TopologizeResult."""
     chains = [np.array(chain) for chain in raw_chains]
     nodes = np.array(raw_nodes).reshape(-1, 2)
     chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
-
     return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
+
+
+def topologize_batch(
+    jobs: list[TopologizeJob],
+) -> list[TopologizeResult]:
+    """
+    Process multiple independent curve-sets in parallel.
+
+    Each :class:`TopologizeJob` bundles its own curves and parameters.
+    Processing runs in parallel via Rayon with the GIL released.
+
+    Parameters
+    ----------
+    jobs : list of TopologizeJob
+        One job per independent topologize invocation.
+
+    Returns
+    -------
+    list of TopologizeResult — one per input job, in the same order.
+    """
+    from topologize._internal import topologize_batch as _batch
+
+    packed = [
+        (
+            _convert_curves(job.curves),
+            job.buffer_distance,
+            job.simplification,
+            job.min_tip_length,
+            job.junction_merge_fraction,
+        )
+        for job in jobs
+    ]
+    raw_results = _batch(packed)
+    return [_unpack_result(*r) for r in raw_results]
