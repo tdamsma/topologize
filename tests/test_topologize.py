@@ -389,3 +389,70 @@ def test_perpendicular_crossing_no_merge_preserves_t_junctions():
     assert np.sum(result.node_degree >= 3) >= 2, (
         f"Expected at least two degree-3 T-junctions, got degrees: {result.node_degree}"
     )
+
+
+# ---------------------------------------------------------------------------
+# curve_ids / chain_source_ids provenance
+# ---------------------------------------------------------------------------
+
+def test_chain_source_ids_none_when_omitted():
+    """chain_source_ids must be None when curve_ids is not provided."""
+    result = topologize(pair(), buffer_distance=0.5)
+    assert result.chain_source_ids is None
+
+
+def test_chain_source_ids_list_when_provided():
+    """chain_source_ids must be a list of frozensets when curve_ids is provided."""
+    curves = pair()
+    result = topologize(curves, buffer_distance=0.5, curve_ids=[10, 20])
+    assert result.chain_source_ids is not None
+    assert isinstance(result.chain_source_ids, list)
+    assert len(result.chain_source_ids) == len(result.chains)
+    for s in result.chain_source_ids:
+        assert isinstance(s, frozenset)
+
+
+def test_chain_source_ids_contains_expected_ids():
+    """Two close parallel lines with distinct IDs: the merged chain should reference both IDs."""
+    curves = pair()
+    result = topologize(curves, buffer_distance=0.5, curve_ids=[10, 20])
+    assert result.chain_source_ids is not None
+    # The two input curves are close together and merge into one skeleton chain;
+    # both IDs should appear in at least one chain's source set.
+    all_ids = set().union(*result.chain_source_ids)
+    assert 10 in all_ids
+    assert 20 in all_ids
+
+
+def test_chain_source_ids_single_curve():
+    """A single input curve: its ID should appear in all non-empty source sets."""
+    curve = np.array([[0.0, 0.0], [10.0, 0.0]])
+    result = topologize([curve, np.array([[0.0, 0.2], [10.0, 0.2]])],
+                        buffer_distance=0.5, curve_ids=[42, 43])
+    assert result.chain_source_ids is not None
+    all_ids = set().union(*result.chain_source_ids)
+    assert 42 in all_ids
+
+
+def test_chain_source_ids_crossing_lines():
+    """Crossing lines: each arm of the X should reference at least one input ID."""
+    curves = crossing_curves()
+    ids = [1, 2, 3, 4]
+    result = topologize(curves, buffer_distance=0.4, curve_ids=ids)
+    assert result.chain_source_ids is not None
+    assert len(result.chain_source_ids) == len(result.chains)
+    # Each chain must have at least one contributing source curve
+    for source_set in result.chain_source_ids:
+        assert len(source_set) >= 1
+    # All four IDs should appear across all chains
+    all_ids = set().union(*result.chain_source_ids)
+    for i in ids:
+        assert i in all_ids
+
+
+def test_chain_source_ids_length_mismatch_raises():
+    """Passing curve_ids with wrong length must raise ValueError."""
+    import pytest
+    curves = pair()  # 2 curves
+    with pytest.raises(ValueError, match="curve_ids"):
+        topologize(curves, buffer_distance=0.5, curve_ids=[1, 2, 3])

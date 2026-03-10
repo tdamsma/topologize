@@ -44,15 +44,19 @@ class TopologizeResult:
     chain_node_ids : list of (start_id, end_id) tuples
         Indices into ``nodes`` for each chain's endpoints.
     chain_widths : list of (M,) numpy arrays or None
-        Estimated contour width at each chain point (2 × distance to nearest
+        Estimated contour width at each chain point (2 x distance to nearest
         inflated polygon boundary vertex). Only populated when
         ``compute_widths=True`` is passed to :func:`topologize`; otherwise None.
+    chain_source_ids : list of frozenset[int] or None
+        One frozenset per chain of contributing input curve IDs; None if
+        ``curve_ids`` was not passed to :func:`topologize`.
     """
 
     chains: list[np.ndarray]
     nodes: np.ndarray
     chain_node_ids: list[tuple[int, int]]
     chain_widths: list[np.ndarray] | None = None
+    chain_source_ids: list[frozenset[int]] | None = None
 
     @property
     def node_degree(self) -> np.ndarray:
@@ -359,6 +363,7 @@ def topologize(
     min_tip_length: float | None = None,
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
+    curve_ids: list[int] | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -395,15 +400,22 @@ def topologize(
         If True, populate ``chain_widths`` with the estimated contour width at
         each chain point (2 x distance to the nearest inflated polygon boundary
         vertex). Disabled by default to avoid the O(S x B) scan overhead.
+    curve_ids : list of int or None, default None
+        Optional integer IDs, one per input curve. When provided, each output
+        chain's ``chain_source_ids`` frozenset contains the IDs of input curves
+        whose polyline passes within ``inflation_radius`` of at least one chain
+        point (point-to-polyline distance on decimated input curves).
 
     Returns
     -------
     TopologizeResult
-        ``.chains``        -- list of (M, 2) arrays, one per non-branching segment
-        ``.nodes``         -- (K, 2) array of unique chain-endpoint positions
-        ``.chain_node_ids``-- list of (start_id, end_id) per chain
-        ``.chain_widths``  -- list of (M,) arrays when ``compute_widths=True``,
-                             else None
+        ``.chains``          -- list of (M, 2) arrays, one per non-branching segment
+        ``.nodes``           -- (K, 2) array of unique chain-endpoint positions
+        ``.chain_node_ids``  -- list of (start_id, end_id) per chain
+        ``.chain_widths``    -- list of (M,) arrays when ``compute_widths=True``,
+                                else None
+        ``.chain_source_ids``-- list of frozenset[int] per chain, or None if
+                                ``curve_ids`` was not provided
     """
     from topologize._internal import topologize as _topologize
 
@@ -423,9 +435,16 @@ def topologize(
         ]
     if compute_widths:
         kwargs["compute_widths"] = True
+    if curve_ids is not None:
+        if len(curve_ids) != len(curves):
+            raise ValueError(
+                f"curve_ids has {len(curve_ids)} entries but curves has {len(curves)}; "
+                "lengths must match"
+            )
+        kwargs["curve_ids"] = [int(i) for i in curve_ids]
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
-    return _unpack_result_with_widths(*raw, compute_widths=compute_widths)
+    return _unpack_result(*raw, compute_widths=compute_widths, curve_ids=curve_ids)
 
 
 def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]:
@@ -463,16 +482,11 @@ def _extract_widths(
         return curves_xy, None
 
 
-def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
-    """Unpack a raw Rust result tuple into TopologizeResult."""
-    chains = [np.array(chain) for chain in raw_chains]
-    nodes = np.array(raw_nodes).reshape(-1, 2)
-    chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
-    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
-
-
-def _unpack_result_with_widths(raw_chains, raw_nodes, raw_chain_node_ids, raw_chain_widths, *, compute_widths=False) -> TopologizeResult:
-    """Unpack a raw Rust result tuple (4-element, with chain_widths) into TopologizeResult."""
+def _unpack_result(
+    raw_chains, raw_nodes, raw_chain_node_ids, raw_chain_widths, raw_source_ids,
+    *, compute_widths=False, curve_ids=None,
+) -> TopologizeResult:
+    """Unpack a raw Rust result 5-tuple into TopologizeResult."""
     chains = [np.array(chain) for chain in raw_chains]
     nodes = np.array(raw_nodes).reshape(-1, 2)
     chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
@@ -481,6 +495,7 @@ def _unpack_result_with_widths(raw_chains, raw_nodes, raw_chain_node_ids, raw_ch
         nodes=nodes,
         chain_node_ids=chain_node_ids,
         chain_widths=[np.array(w) for w in raw_chain_widths] if compute_widths else None,
+        chain_source_ids=[frozenset(ids) for ids in raw_source_ids] if curve_ids is not None else None,
     )
 
 
@@ -517,4 +532,12 @@ def topologize_batch(
             job.junction_merge_fraction,
         ))
     raw_results = _batch(packed)
-    return [_unpack_result(*r) for r in raw_results]
+    return [_unpack_result_batch(*r) for r in raw_results]
+
+
+def _unpack_result_batch(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
+    """Unpack a batch result tuple (no widths/provenance) into TopologizeResult."""
+    chains = [np.array(chain) for chain in raw_chains]
+    nodes = np.array(raw_nodes).reshape(-1, 2)
+    chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
+    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
