@@ -1,7 +1,7 @@
 # %% [markdown]
 # # topologize — getting started
 #
-# `topologize` takes a set of polylines, inflates them by a `buffer_distance`,
+# `topologize` takes a set of polylines, inflates them by an `inflation_radius`,
 # and returns the medial axis as maximal non-branching chains.
 #
 # **Typical use case:** clean up hand-drawn or over-sampled strokes into a
@@ -12,33 +12,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from topologize import topologize
-
-# %% [markdown]
-# ## Helper: plot curves and chains
-
-# %%
-COLORS = [
-    "#e41a1c", "#377eb8", "#4daf4a", "#ff7f00",
-    "#984ea3", "#a65628", "#f781bf", "#333333",
-]
-
-def plot(curves, chains, buffer_distance, title=""):
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_aspect("equal")
-    ax.set_title(title or f"buffer_distance={buffer_distance}")
-
-    for c in curves:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=6, solid_capstyle="round")
-
-    for i, chain in enumerate(chains):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2)
-
-    plt.tight_layout()
-    plt.show()
 
 # %% [markdown]
 # ## Example 1: a few simple polylines
@@ -51,13 +27,10 @@ def plot(curves, chains, buffer_distance, title=""):
 p1 = np.array([[0.0, 2.0], [10.0, 0.0], [5.0, 0.1], [5.0, 5.0]])
 
 # open polyline resampled to 24 points
-import shapely  # noqa: E402
-_p2 = shapely.LineString([[0, 6], [1, 4], [2, 0]])
-p2 = np.array(
-    shapely.LineString(
-        _p2.interpolate(np.linspace(0, 1, 24), normalized=True)
-    ).coords
-)
+_p2 = np.array([[0.0, 6.0], [1.0, 4.0], [2.0, 0.0]])
+_p2_dists = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(_p2, axis=0), axis=1))])
+_t = np.linspace(0, _p2_dists[-1], 24)
+p2 = np.column_stack([np.interp(_t, _p2_dists, _p2[:, 0]), np.interp(_t, _p2_dists, _p2[:, 1])])
 
 # circle (closed ring)
 _cc, _cr = np.array([13.0, 1.0]), np.linalg.norm(np.array([13.0, 1.0]) - [10.0, 0.0])
@@ -75,30 +48,20 @@ star = np.vstack([_star, _star[:1]])
 curves = [p1, p2, circle, star]
 
 # %%
-buffer_distance = 0.6
-result = topologize(curves, buffer_distance)
-chains = result.chains
-print(f"{len(chains)} chains, {sum(len(c) for c in chains)} total points")
-plot(curves, chains, buffer_distance, title="Simple shapes")
+result = topologize(curves, inflation_radius=0.6)
+print(f"{len(result.chains)} chains, {sum(len(c) for c in result.chains)} total points")
+result.plot(curves, inflation_radius=0.6, title="Simple shapes").show()
 
 # %% [markdown]
-# ## Example 2: effect of buffer_distance
+# ## Example 2: effect of inflation_radius
 #
-# A larger `buffer_distance` merges nearby strokes more aggressively,
+# A larger `inflation_radius` merges nearby strokes more aggressively,
 # producing fewer but smoother chains.
 
 # %%
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-for ax, bd in zip(axes, [0.3, 0.6, 1.2]):
-    ch = topologize(curves, bd).chains
-    ax.set_aspect("equal")
-    ax.set_title(f"buffer_distance={bd}  ({len(ch)} chains)")
-    for c in curves:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=6, solid_capstyle="round")
-    for i, chain in enumerate(ch):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2)
-plt.tight_layout()
-plt.show()
+for ir in [0.3, 0.6, 1.2]:
+    r = topologize(curves, ir)
+    r.plot(curves, ir, title=f"inflation_radius={ir}  ({len(r.chains)} chains)").show()
 
 # %% [markdown]
 # ## Example 3: parallel lines merging into one
@@ -110,17 +73,9 @@ plt.show()
 line_a = np.column_stack([np.linspace(0, 10, 50), np.zeros(50)])
 line_b = np.column_stack([np.linspace(0, 10, 50), np.ones(50) * 0.8])
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-for ax, bd in zip(axes, [0.3, 0.6]):
-    ch = topologize([line_a, line_b], bd).chains
-    ax.set_aspect("equal")
-    ax.set_title(f"buffer_distance={bd}  ({len(ch)} chain{'s' if len(ch) != 1 else ''})")
-    for c in [line_a, line_b]:
-        ax.plot(c[:, 0], c[:, 1], color="lightgray", lw=10, solid_capstyle="round")
-    for i, chain in enumerate(ch):
-        ax.plot(chain[:, 0], chain[:, 1], color=COLORS[i % len(COLORS)], lw=2.5)
-plt.tight_layout()
-plt.show()
+for ir in [0.3, 0.6]:
+    r = topologize([line_a, line_b], ir)
+    r.plot([line_a, line_b], ir, title=f"inflation_radius={ir}  ({len(r.chains)} chain{'s' if len(r.chains) != 1 else ''})").show()
 
 # %% [markdown]
 # ## Example 4: inspecting chain geometry
@@ -128,7 +83,7 @@ plt.show()
 # Each chain is a plain `(N, 2)` numpy array — easy to work with downstream.
 
 # %%
-chains = topologize(curves, buffer_distance=0.6).chains
+chains = topologize(curves, inflation_radius=0.6).chains
 
 for i, chain in enumerate(chains):
     length = np.sum(np.linalg.norm(np.diff(chain, axis=0), axis=1))

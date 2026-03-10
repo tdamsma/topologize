@@ -66,8 +66,9 @@ pub fn inflate(
     curves: &[Vec<Pt>],
     buffer_distance: f64,
     per_curve_widths: Option<&[Vec<f64>]>,
+    feature_size: f64,
 ) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
-    let arc_tol = buffer_distance * ARC_TOL_FACTOR;
+    let arc_tol = feature_size * ARC_TOL_FACTOR;
 
     let mut all_inflated: Vec<Vec<Point<f64>>> = Vec::new();
 
@@ -102,7 +103,7 @@ pub fn inflate(
 
     // Holes smaller than this are degenerate artifacts (e.g. from coarse
     // input sampling) and would cause CDT to fail.
-    let min_hole_area = buffer_distance * buffer_distance * 0.1;
+    let min_hole_area = feature_size * feature_size * 0.1;
 
     for path in &union_result {
         let pts = dedup_ring(path.iter().map(|p| (p.x, p.y)).collect());

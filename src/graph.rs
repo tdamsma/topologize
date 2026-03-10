@@ -160,7 +160,7 @@ pub fn prune_short_tips(graph: &Graph, min_tip_len: f64) -> Graph {
 /// their midpoint, repeating until no qualifying edge remains.
 ///
 /// `max_dist` is the contraction threshold. A good default is
-/// `1.5 × buffer_distance`, which handles crossings above ~50°.
+/// `1.5 × feature_size`, which handles crossings above ~50°.
 /// Pass `max_dist = 0.0` to disable merging entirely.
 pub fn merge_close_junctions(graph: &Graph, max_dist: f64) -> Graph {
     fn root(parent: &[usize], mut x: usize) -> usize {

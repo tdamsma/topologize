@@ -35,7 +35,7 @@ def crossing_curves():
 # ---------------------------------------------------------------------------
 
 def test_returns_result_with_chains():
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     assert isinstance(result.chains, list)
     for chain in result.chains:
         assert isinstance(chain, np.ndarray)
@@ -44,14 +44,14 @@ def test_returns_result_with_chains():
 
 
 def test_returns_result_with_nodes():
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     assert isinstance(result.nodes, np.ndarray)
     assert result.nodes.ndim == 2
     assert result.nodes.shape[1] == 2
 
 
 def test_returns_result_with_chain_node_ids():
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     assert len(result.chain_node_ids) == len(result.chains)
     for s, e in result.chain_node_ids:
         assert 0 <= s < len(result.nodes)
@@ -59,12 +59,12 @@ def test_returns_result_with_chain_node_ids():
 
 
 def test_chain_widths_none_by_default():
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     assert result.chain_widths is None
 
 
 def test_returns_result_with_chain_widths():
-    result = topologize(pair(), buffer_distance=0.5, compute_widths=True)
+    result = topologize(pair(), inflation_radius=0.5, compute_widths=True)
     assert isinstance(result.chain_widths, list)
     assert len(result.chain_widths) == len(result.chains)
     for w, chain in zip(result.chain_widths, result.chains):
@@ -74,29 +74,27 @@ def test_returns_result_with_chain_widths():
 
 
 def test_chain_widths_are_positive():
-    result = topologize(pair(), buffer_distance=0.5, compute_widths=True)
+    result = topologize(pair(), inflation_radius=0.5, compute_widths=True)
     for w in result.chain_widths:
         assert np.all(w > 0), "all width values must be positive"
 
 
 def test_chain_widths_approximately_two_times_buffer():
-    """Interior width estimates should be close to 2 × buffer_distance."""
-    buffer_distance = 0.5
-    result = topologize(pair(), buffer_distance=buffer_distance, compute_widths=True)
+    """Interior width estimates should be close to 2 × inflation_radius."""
+    ir = 0.5
+    result = topologize(pair(), inflation_radius=ir, compute_widths=True)
     for w in result.chain_widths:
         if len(w) < 3:
             continue
-        # Interior points (excluding endpoints) should be near 2× buffer.
-        # Allow ±50% tolerance given the vertex-distance approximation.
         interior = w[1:-1]
         assert np.all(interior > 0), "interior widths must be positive"
-        assert np.all(interior < 4 * buffer_distance), (
+        assert np.all(interior < 4 * ir), (
             f"interior widths unexpectedly large: {interior}"
         )
 
 
 def test_empty_input_returns_empty():
-    result = topologize([], buffer_distance=1.0)
+    result = topologize([], inflation_radius=1.0)
     assert result.chains == []
     assert result.nodes.shape == (0, 2)
     assert result.chain_node_ids == []
@@ -105,7 +103,7 @@ def test_empty_input_returns_empty():
 
 def test_degenerate_curve_skipped():
     # Single-point curve — too short to buffer meaningfully
-    result = topologize([np.array([[5.0, 5.0]])], buffer_distance=1.0)
+    result = topologize([np.array([[5.0, 5.0]])], inflation_radius=1.0)
     assert isinstance(result.chains, list)
 
 
@@ -115,7 +113,7 @@ def test_degenerate_curve_skipped():
 
 def test_two_parallel_lines_produce_output():
     """Two close parallel lines should produce at least one chain."""
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     chains = result.chains
     assert len(chains) >= 1
     assert sum(len(c) for c in chains) >= 2
@@ -123,13 +121,13 @@ def test_two_parallel_lines_produce_output():
 
 def test_two_parallel_lines_merge():
     """Two parallel lines close together should not produce one chain per input stroke."""
-    result = topologize(pair(y_offset=0.3), buffer_distance=0.5)
+    result = topologize(pair(y_offset=0.3), inflation_radius=0.5)
     assert len(result.chains) <= 5
 
 
 def test_closed_circle():
     """A closed ring should produce at least one chain."""
-    result = topologize([circle(0.0, 0.0, 5.0)], buffer_distance=0.5)
+    result = topologize([circle(0.0, 0.0, 5.0)], inflation_radius=0.5)
     chains = result.chains
     assert len(chains) >= 1
     assert sum(len(c) for c in chains) >= 4
@@ -137,7 +135,7 @@ def test_closed_circle():
 
 def test_crossing_lines_produce_junction():
     """Two crossing pairs of parallel lines should produce multiple chains (arms at junction)."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     assert len(result.chains) >= 4
 
 
@@ -155,10 +153,10 @@ def test_merging_at_larger_buffer():
         np.array([[0.0, 10.0], [10.0, 10.0]]),
         np.array([[0.0, 10.3], [10.0, 10.3]]),
     ]
-    result_small = topologize(curves, buffer_distance=0.5)
+    result_small = topologize(curves, inflation_radius=0.5)
     # Disable tip pruning for large buffer: default min_tip_length = 12.0 would
     # prune the entire H-shape (all arms are ~5–10 units, below the threshold).
-    result_large = topologize(curves, buffer_distance=6.0, min_tip_length=0.0)
+    result_large = topologize(curves, inflation_radius=6.0, min_tip_length=0.0)
 
     chains_small = result_small.chains
     chains_large = result_large.chains
@@ -184,8 +182,8 @@ def test_three_parallel_pairs_merge_progressively():
         np.array([[0.0, 3.0], [10.0, 3.0]]),
         np.array([[0.0, 3.3], [10.0, 3.3]]),
     ]
-    result_small = topologize(curves, buffer_distance=0.5)
-    result_large = topologize(curves, buffer_distance=2.0)
+    result_small = topologize(curves, inflation_radius=0.5)
+    result_large = topologize(curves, inflation_radius=2.0)
     assert len(result_large.chains) <= len(result_small.chains)
 
 
@@ -198,7 +196,7 @@ def test_output_points_are_finite():
         np.array([[0.0, 0.0], [10.0, 0.0], [5.0, 5.0]]),
         np.array([[0.1, 0.1], [9.9, 0.1], [5.0, 4.9]]),
     ]
-    result = topologize(curves, buffer_distance=0.5)
+    result = topologize(curves, inflation_radius=0.5)
     for chain in result.chains:
         assert np.all(np.isfinite(chain))
 
@@ -209,15 +207,13 @@ def test_output_points_are_finite():
 
 def test_crossing_lines_junction_degree():
     """Crossing lines should produce junction nodes (degree >= 3)."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
-    # CDT skeleton may produce two degree-3 junctions connected by a bridge
-    # rather than a single degree-4 node — either is valid crossing topology.
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     assert np.any(result.node_degree >= 3)
 
 
 def test_crossing_lines_junction_chains():
     """Junction nodes should have chains_at_node consistent with their degree."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     for node_id, deg in enumerate(result.node_degree):
         if deg >= 3:
             assert len(result.chains_at_node(node_id)) == deg
@@ -225,7 +221,7 @@ def test_crossing_lines_junction_chains():
 
 def test_chain_endpoints_match_nodes():
     """chain[0] and chain[-1] must match the corresponding node positions."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     for i, (chain, (s, e)) in enumerate(zip(result.chains, result.chain_node_ids)):
         assert np.allclose(chain[0], result.nodes[s], atol=1e-6), \
             f"chain {i} start mismatch: chain[0]={chain[0]}, nodes[{s}]={result.nodes[s]}"
@@ -235,19 +231,17 @@ def test_chain_endpoints_match_nodes():
 
 def test_node_degree_property():
     """node_degree shape and values are consistent with chain_node_ids."""
-    result = topologize(pair(), buffer_distance=0.5)
+    result = topologize(pair(), inflation_radius=0.5)
     deg = result.node_degree
     assert deg.shape == (len(result.nodes),)
     assert deg.dtype == int
-    # Every node must have degree >= 1
     assert np.all(deg >= 1)
-    # Sum of degrees == 2 * number of chains
     assert deg.sum() == 2 * len(result.chains)
 
 
 def test_chains_at_node_covers_all():
     """Every chain index appears in chains_at_node for both its endpoints."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     for i, (s, e) in enumerate(result.chain_node_ids):
         assert i in result.chains_at_node(s)
         assert i in result.chains_at_node(e)
@@ -257,10 +251,10 @@ def test_chains_at_node_covers_all():
 # Variable per-vertex widths
 # ---------------------------------------------------------------------------
 
-def test_inflate_backward_compatible_2col():
-    """Standard (N,2) curves inflate without per-vertex widths (backward compat)."""
+def test_inflate_uniform():
+    """Standard (N,2) curves inflate with uniform radius."""
     curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
-    result = inflate(curves, buffer_distance=0.5)
+    result = inflate(curves, inflation_radius=0.5)
     assert len(result) >= 1
     outer, holes = result[0]
     assert isinstance(outer, np.ndarray)
@@ -269,85 +263,109 @@ def test_inflate_backward_compatible_2col():
 
 def test_inflate_n3_auto_widths():
     """(N,3) curves: column 2 is used as per-vertex buffer radius."""
-    # Curve with per-vertex widths embedded in column 2.
     curve = np.array([[0.0, 0.0, 1.0], [5.0, 0.0, 2.0]])
-    result = inflate([curve], buffer_distance=0.5)
-    assert len(result) >= 1
-    outer, _ = result[0]
-    assert isinstance(outer, np.ndarray)
-    assert outer.shape[1] == 2  # output is always (N,2)
-
-
-def test_inflate_explicit_per_curve_widths():
-    """Explicit per_curve_widths overrides (N,3) column."""
-    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
-    widths = [[0.8, 1.5]]
-    result = inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+    result = inflate([curve], inflation_radius=0.5)
     assert len(result) >= 1
     outer, _ = result[0]
     assert isinstance(outer, np.ndarray)
     assert outer.shape[1] == 2
 
 
-def test_inflate_mixed_widths_some_empty():
-    """Mixed input: one curve with widths, one using buffer_distance (empty list)."""
+def test_inflate_per_vertex_widths():
+    """Per-vertex widths via inflation_radius list."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [np.array([0.8, 1.5])]
+    result = inflate(curves, inflation_radius=widths)
+    assert len(result) >= 1
+    outer, _ = result[0]
+    assert isinstance(outer, np.ndarray)
+    assert outer.shape[1] == 2
+
+
+def test_inflate_per_vertex_length_mismatch_raises():
+    """Per-vertex widths with wrong vertex count raises ValueError."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [np.array([1.0, 2.0, 3.0])]  # 3 entries for a 2-point curve
+    with pytest.raises(ValueError, match="inflation_radius"):
+        inflate(curves, inflation_radius=widths)
+
+
+def test_inflate_too_many_entries_raises():
+    """More inflation_radius entries than curves raises ValueError."""
+    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
+    widths = [np.array([1.0, 1.0]), np.array([2.0, 2.0])]  # 2 entries for 1 curve
+    with pytest.raises(ValueError, match="inflation_radius"):
+        inflate(curves, inflation_radius=widths)
+
+
+def test_inflate_fewer_entries_raises():
+    """Fewer inflation_radius entries than curves raises ValueError."""
     curves = [
         np.array([[0.0, 0.0], [5.0, 0.0]]),
         np.array([[0.0, 3.0], [5.0, 3.0]]),
     ]
-    widths = [[1.0, 1.0], []]  # second curve uses buffer_distance
-    result = inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
-    assert len(result) >= 1
-
-
-def test_inflate_per_curve_widths_length_mismatch_raises():
-    """per_curve_widths with wrong vertex count raises ValueError."""
-    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
-    widths = [[1.0, 2.0, 3.0]]  # 3 entries for a 2-point curve
-    with pytest.raises(ValueError, match="per_curve_widths"):
-        inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
-
-
-def test_inflate_per_curve_widths_too_many_entries_raises():
-    """More per_curve_widths entries than curves raises ValueError."""
-    curves = [np.array([[0.0, 0.0], [5.0, 0.0]])]
-    widths = [[1.0, 1.0], [2.0, 2.0]]  # 2 width entries for 1 curve
-    with pytest.raises(ValueError, match="per_curve_widths"):
-        inflate(curves, buffer_distance=0.5, per_curve_widths=widths)
+    widths = [np.array([1.0, 1.0])]  # 1 entry for 2 curves
+    with pytest.raises(ValueError, match="inflation_radius"):
+        inflate(curves, inflation_radius=widths)
 
 
 def test_topologize_with_n3_curves():
     """topologize accepts (N,3) curves and produces valid output."""
     curve1 = np.array([[0.0, 0.0, 0.5], [10.0, 0.0, 0.5]])
     curve2 = np.array([[0.0, 0.3, 0.5], [10.0, 0.3, 0.5]])
-    result = topologize([curve1, curve2], buffer_distance=0.5)
+    result = topologize([curve1, curve2], inflation_radius=0.5)
     assert isinstance(result.chains, list)
     assert len(result.chains) >= 1
 
 
-def test_topologize_explicit_per_curve_widths():
-    """topologize accepts explicit per_curve_widths."""
+def test_topologize_per_vertex_widths():
+    """topologize accepts per-vertex widths via inflation_radius list."""
     curves = pair()
-    widths = [[0.5, 0.5], [0.5, 0.5]]
-    result = topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
+    widths = [np.array([0.5, 0.5]), np.array([0.5, 0.5])]
+    result = topologize(curves, inflation_radius=widths)
     assert isinstance(result.chains, list)
     assert len(result.chains) >= 1
 
 
-def test_topologize_per_curve_widths_too_many_raises():
-    """topologize rejects per_curve_widths with more entries than curves."""
+def test_topologize_per_vertex_too_many_raises():
+    """topologize rejects inflation_radius with more entries than curves."""
     curves = pair()  # 2 curves
-    widths = [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]  # 3 entries
-    with pytest.raises(ValueError, match="per_curve_widths"):
-        topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
+    widths = [np.array([0.5, 0.5]), np.array([0.5, 0.5]), np.array([0.5, 0.5])]  # 3 entries
+    with pytest.raises(ValueError, match="inflation_radius"):
+        topologize(curves, inflation_radius=widths)
 
 
-def test_topologize_per_curve_widths_vertex_mismatch_raises():
-    """topologize rejects per_curve_widths with wrong vertex count."""
+def test_topologize_per_vertex_mismatch_raises():
+    """topologize rejects inflation_radius with wrong vertex count."""
     curves = pair()  # each curve has 2 points
-    widths = [[0.5, 0.5, 0.5], [0.5, 0.5]]  # first has 3 entries for 2-point curve
-    with pytest.raises(ValueError, match="per_curve_widths"):
-        topologize(curves, buffer_distance=0.5, per_curve_widths=widths)
+    widths = [np.array([0.5, 0.5, 0.5]), np.array([0.5, 0.5])]  # first has 3 entries for 2-point curve
+    with pytest.raises(ValueError, match="inflation_radius"):
+        topologize(curves, inflation_radius=widths)
+
+
+def test_feature_size_override():
+    """Explicit feature_size should be used for thresholds."""
+    curves = pair()
+    # Small inflation_radius but large feature_size => more aggressive pruning
+    result = topologize(curves, inflation_radius=0.5, feature_size=5.0)
+    assert isinstance(result.chains, list)
+
+
+def test_feature_size_auto_derived_from_per_vertex_widths():
+    """When inflation_radius is a list, feature_size defaults to median of all widths."""
+    curves = pair()
+    widths = [np.array([0.5, 0.5]), np.array([0.5, 0.5])]
+    # Should not raise — feature_size is auto-derived as median(all widths) = 0.5
+    result = topologize(curves, inflation_radius=widths)
+    assert isinstance(result.chains, list)
+    assert len(result.chains) >= 1
+
+
+def test_topologize_per_vertex_no_widths_raises():
+    """inflation_radius as an empty list raises ValueError."""
+    curves = pair()
+    with pytest.raises(ValueError, match="no width values"):
+        topologize(curves, inflation_radius=[np.array([]), np.array([])])
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +374,7 @@ def test_topologize_per_curve_widths_vertex_mismatch_raises():
 
 def test_perpendicular_crossing_merges_to_x_junction():
     """Default junction_merge_fraction should collapse two T-junctions into a degree-4 node."""
-    result = topologize(crossing_curves(), buffer_distance=0.4)
+    result = topologize(crossing_curves(), inflation_radius=0.4)
     assert np.any(result.node_degree >= 4), (
         f"Expected a degree-4 X-junction after merging, got degrees: {result.node_degree}"
     )
@@ -364,7 +382,7 @@ def test_perpendicular_crossing_merges_to_x_junction():
 
 def test_perpendicular_crossing_no_merge_preserves_t_junctions():
     """junction_merge_fraction=0.0 should keep two separate degree-3 T-junctions."""
-    result = topologize(crossing_curves(), buffer_distance=0.4, junction_merge_fraction=0.0)
+    result = topologize(crossing_curves(), inflation_radius=0.4, junction_merge_fraction=0.0)
     assert not np.any(result.node_degree >= 4), (
         f"Expected no degree-4 nodes with merging disabled, got degrees: {result.node_degree}"
     )

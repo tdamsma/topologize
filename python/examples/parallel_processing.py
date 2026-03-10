@@ -34,13 +34,13 @@ topologize_batch([TopologizeJob(curve_sets[0], bd)])
 
 # %% Sequential
 t0 = time.perf_counter()
-[topologize(cs, buffer_distance=bd) for cs in curve_sets]
+[topologize(cs, inflation_radius=bd) for cs in curve_sets]
 t_seq = time.perf_counter() - t0
 
 # %% ThreadPoolExecutor (GIL released in single topologize)
 t0 = time.perf_counter()
 with ThreadPoolExecutor() as pool:
-    list(pool.map(lambda cs: topologize(cs, buffer_distance=bd), curve_sets))
+    list(pool.map(lambda cs: topologize(cs, inflation_radius=bd), curve_sets))
 t_threads = time.perf_counter() - t0
 
 # %% topologize_batch (Rayon parallel)
@@ -55,16 +55,9 @@ print(f"{'Sequential loop':<25} {t_seq:>7.3f}s {1.0:>7.1f}x")
 print(f"{'ThreadPoolExecutor':<25} {t_threads:>7.3f}s {t_seq / t_threads:>7.1f}x")
 print(f"{'topologize_batch':<25} {t_batch:>7.3f}s {t_seq / t_batch:>7.1f}x")
 
-# %% show result of one job with plotly
-import plotly.graph_objects as go  # noqa: E402
+# %% show result of one job
 cs = curve_sets[0]
-result = topologize(cs, buffer_distance=bd)
-fig = go.Figure()
-for c in cs:
-    fig.add_trace(go.Scatter(x=c[:, 0], y=c[:, 1], mode="lines", line=dict(color="lightgray", width=6), name="input"))
-for chain in result.chains:
-    fig.add_trace(go.Scatter(x=chain[:, 0], y=chain[:, 1], mode="lines", name="chain"))
-fig.update_layout(title="Example curve-set and its topology", yaxis_scaleanchor="x")
-fig.show()
+result = topologize(cs, inflation_radius=bd)
+result.plot(cs, bd, title="Example curve-set and its topology").show()
 
 # %%
