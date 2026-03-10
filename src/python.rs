@@ -209,6 +209,9 @@ pub fn triangulate_curves(
 /// ----------
 /// curves : list of lists of (x, y) tuples
 /// buffer_distance : float
+///     Uniform inflation radius (used for curves without per-vertex widths).
+/// feature_size : float
+///     Scale parameter for input decimation and derived thresholds.
 /// per_curve_widths : list of lists of float, default None
 ///     Per-vertex radii for each curve (one list per curve). If provided,
 ///     each sub-list must have the same length as the corresponding curve.
