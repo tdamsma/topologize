@@ -74,8 +74,11 @@ def test_batch_faster_than_sequential():
     topologize_batch(curve_sets, bd)
     t_batch = time.perf_counter() - t0
 
-    assert t_batch < t_seq, (
-        f"batch ({t_batch:.3f}s) should be faster than sequential ({t_seq:.3f}s)"
+    speedup = t_seq / t_batch
+    print(f"sequential: {t_seq:.3f}s, batch: {t_batch:.3f}s, speedup: {speedup:.1f}x")
+    assert speedup >= 2.0, (
+        f"batch should be at least 2x faster, got {speedup:.1f}x "
+        f"(sequential {t_seq:.3f}s, batch {t_batch:.3f}s)"
     )
 
 
