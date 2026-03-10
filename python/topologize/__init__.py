@@ -151,3 +151,60 @@ def topologize(
     chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
 
     return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
+
+
+def _convert_curves(curves: list[np.ndarray]) -> list[list[tuple[float, float]]]:
+    """Convert numpy arrays to list-of-tuples for Rust."""
+    return [[tuple(float(v) for v in pt) for pt in curve] for curve in curves]
+
+
+def _unpack_result(raw_chains, raw_nodes, raw_chain_node_ids) -> TopologizeResult:
+    """Unpack a raw Rust result tuple into TopologizeResult."""
+    chains = [np.array(chain) for chain in raw_chains]
+    nodes = np.array(raw_nodes).reshape(-1, 2)
+    chain_node_ids = [tuple(pair) for pair in raw_chain_node_ids]
+    return TopologizeResult(chains=chains, nodes=nodes, chain_node_ids=chain_node_ids)
+
+
+def topologize_batch(
+    curve_sets: list[list[np.ndarray]],
+    buffer_distance: float,
+    *,
+    simplification: float | None = None,
+    min_tip_length: float | None = None,
+    junction_merge_fraction: float | None = None,
+) -> list[TopologizeResult]:
+    """
+    Process multiple independent curve-sets in parallel.
+
+    Each element of ``curve_sets`` is an independent input (list of polylines)
+    that would normally be passed to :func:`topologize`. All sets share the
+    same parameters. Processing runs in parallel via Rayon with the GIL
+    released.
+
+    Parameters
+    ----------
+    curve_sets : list of (list of (N, 2) numpy arrays)
+        One curve-set per independent topologize job.
+    buffer_distance : float
+    simplification : float or None
+    min_tip_length : float or None
+    junction_merge_fraction : float or None
+
+    Returns
+    -------
+    list of TopologizeResult — one per input curve-set, in the same order.
+    """
+    from topologize._internal import topologize_batch as _batch
+
+    kwargs = {}
+    if simplification is not None:
+        kwargs["simplification"] = float(simplification)
+    if min_tip_length is not None:
+        kwargs["min_tip_length"] = float(min_tip_length)
+    if junction_merge_fraction is not None:
+        kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
+
+    converted = [_convert_curves(cs) for cs in curve_sets]
+    raw_results = _batch(converted, buffer_distance, **kwargs)
+    return [_unpack_result(*r) for r in raw_results]

@@ -218,6 +218,116 @@ pub fn inflate_curves(
     inflate::inflate(&decimated, buffer_distance)
 }
 
+/// Core topologize logic, callable from both single and batch entry points.
+fn topologize_inner(
+    curves: &[Vec<Pt>],
+    buffer_distance: f64,
+    simplification: Option<f64>,
+    min_tip_length: Option<f64>,
+    junction_merge_fraction: Option<f64>,
+) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>) {
+    let min_step = buffer_distance * 0.15;
+    let decimated: Vec<Vec<Pt>> = curves
+        .iter()
+        .map(|c| decimate_curve(c, min_step))
+        .collect();
+
+    let polygons = inflate::inflate(&decimated, buffer_distance);
+
+    let rdp_boundary = buffer_distance * 0.15;
+    let max_seg = buffer_distance * 1.5;
+    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+        .into_iter()
+        .map(|(outer, holes)| {
+            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+            let holes = holes
+                .iter()
+                .map(|h| subdivide_ring(h, max_seg))
+                .collect();
+            (outer, holes)
+        })
+        .collect();
+
+    let snap_tol = buffer_distance / 20.0;
+    let rdp_tol = simplification.unwrap_or(buffer_distance / 10.0);
+
+    let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
+    for (outer, holes) in &polygons {
+        if outer.len() < 3 {
+            continue;
+        }
+        all_segments.extend(skeleton_cdt::skeletonize(outer, holes, buffer_distance));
+    }
+
+    if all_segments.is_empty() {
+        return (vec![], vec![], vec![]);
+    }
+
+    let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
+    let tip_len = min_tip_length.unwrap_or(buffer_distance * 2.0);
+    let graph = if tip_len > 0.0 {
+        graph::prune_short_tips(&raw_graph, tip_len)
+    } else {
+        raw_graph
+    };
+    let merge_frac = junction_merge_fraction.unwrap_or(1.5);
+    let graph = if merge_frac > 0.0 {
+        graph::merge_close_junctions(&graph, merge_frac * buffer_distance)
+    } else {
+        graph
+    };
+    let chains = graph::extract_chains(&graph);
+
+    let processed: Vec<(Vec<Pt>, usize, usize)> = chains
+        .into_iter()
+        .map(|chain| {
+            let graph::Chain { mut pts, start_terminal, end_terminal, start_node, end_node } =
+                chain;
+            pts = smooth_chain_pass(&pts);
+            pts = smooth_chain_pass(&pts);
+            pts = smooth_chain_pass(&pts);
+            if end_terminal {
+                straighten_terminal_end(&mut pts);
+            }
+            if start_terminal {
+                straighten_terminal_start(&mut pts);
+            }
+            if rdp_tol > 0.0 {
+                pts = rdp(&pts, rdp_tol);
+            }
+            (pts, start_node, end_node)
+        })
+        .collect();
+
+    let mut node_remap: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut nodes: Vec<Pt> = Vec::new();
+    let mut chain_node_ids: Vec<(usize, usize)> = Vec::new();
+
+    for (pts, sn, en) in &processed {
+        let compact_s = if let Some(&id) = node_remap.get(sn) {
+            id
+        } else {
+            let id = nodes.len();
+            nodes.push(pts[0]);
+            node_remap.insert(*sn, id);
+            id
+        };
+        let compact_e = if let Some(&id) = node_remap.get(en) {
+            id
+        } else {
+            let id = nodes.len();
+            nodes.push(*pts.last().unwrap());
+            node_remap.insert(*en, id);
+            id
+        };
+        chain_node_ids.push((compact_s, compact_e));
+    }
+
+    let out: Vec<Vec<Pt>> = processed.into_iter().map(|(pts, _, _)| pts).collect();
+    (out, nodes, chain_node_ids)
+}
+
 /// Topologize a list of polylines into clean centerline chains.
 ///
 /// 1. Inflate all curves by `buffer_distance` and union them into polygons.
@@ -258,123 +368,33 @@ pub fn topologize(
     min_tip_length: Option<f64>,
     junction_merge_fraction: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)> {
-    // Decimate dense input before inflate so clipper2 isn't fed millions of
-    // nearly-duplicate points. min_step = 0.15 × buffer only removes points
-    // in truly dense regions.
-    let min_step = buffer_distance * 0.15;
-    let decimated: Vec<Vec<Pt>> = curves
-        .iter()
-        .map(|c| decimate_curve(c, min_step))
-        .collect();
+    Ok(topologize_inner(&curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction))
+}
 
-    let polygons = inflate::inflate(&decimated, buffer_distance);
-
-    // RDP-simplify polygon boundary: near-collinear points from the parallel
-    // offset are pure CDT overhead — the skeleton can't resolve below
-    // buffer_distance anyway. ε = 0.15 × buffer reduces 20k+ pts to ~1k.
-    let rdp_boundary = buffer_distance * 0.15;
-    // Then subdivide so no edge exceeds 1.5 × buffer, keeping CDT triangles
-    // compact. Existing vertices are kept; only intermediate points inserted.
-    let max_seg = buffer_distance * 1.5;
-    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-        .into_iter()
-        .map(|(outer, holes)| {
-            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
-            // Don't RDP-simplify holes: closely-spaced holes can develop
-            // crossing constraints after simplification, causing CDT to fail.
-            let holes = holes
-                .iter()
-                .map(|h| subdivide_ring(h, max_seg))
-                .collect();
-            (outer, holes)
-        })
-        .collect();
-
-    let snap_tol = buffer_distance / 20.0;
-    let rdp_tol = simplification.unwrap_or(buffer_distance / 10.0);
-
-    let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
-    for (outer, holes) in &polygons {
-        if outer.len() < 3 {
-            continue;
-        }
-        all_segments.extend(skeleton_cdt::skeletonize(outer, holes, buffer_distance));
-    }
-
-    if all_segments.is_empty() {
-        return Ok((vec![], vec![], vec![]));
-    }
-
-    let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
-    let tip_len = min_tip_length.unwrap_or(buffer_distance * 2.0);
-    let graph = if tip_len > 0.0 {
-        graph::prune_short_tips(&raw_graph, tip_len)
-    } else {
-        raw_graph
-    };
-    let merge_frac = junction_merge_fraction.unwrap_or(1.5);
-    let graph = if merge_frac > 0.0 {
-        graph::merge_close_junctions(&graph, merge_frac * buffer_distance)
-    } else {
-        graph
-    };
-    let chains = graph::extract_chains(&graph);
-
-    // Post-process each chain; preserve raw node indices for topology output.
-    let processed: Vec<(Vec<Pt>, usize, usize)> = chains
-        .into_iter()
-        .map(|chain| {
-            let graph::Chain { mut pts, start_terminal, end_terminal, start_node, end_node } =
-                chain;
-            // Three passes of projection smoothing reduce the staircase
-            // artifact from alternating CDT triangle orientations.
-            pts = smooth_chain_pass(&pts);
-            pts = smooth_chain_pass(&pts);
-            pts = smooth_chain_pass(&pts);
-            // Straighten terminal endpoints along the extrapolated chain
-            // direction. Junction endpoints stay fixed to preserve connectivity.
-            if end_terminal {
-                straighten_terminal_end(&mut pts);
-            }
-            if start_terminal {
-                straighten_terminal_start(&mut pts);
-            }
-            if rdp_tol > 0.0 {
-                pts = rdp(&pts, rdp_tol);
-            }
-            (pts, start_node, end_node)
-        })
-        .collect();
-
-    // Build a compact node list from final chain endpoints.
-    // Junction endpoints are never moved by post-processing, so their
-    // positions are consistent across all chains that share the node.
-    let mut node_remap: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
-    let mut nodes: Vec<Pt> = Vec::new();
-    let mut chain_node_ids: Vec<(usize, usize)> = Vec::new();
-
-    for (pts, sn, en) in &processed {
-        let compact_s = if let Some(&id) = node_remap.get(sn) {
-            id
-        } else {
-            let id = nodes.len();
-            nodes.push(pts[0]);
-            node_remap.insert(*sn, id);
-            id
-        };
-        let compact_e = if let Some(&id) = node_remap.get(en) {
-            id
-        } else {
-            let id = nodes.len();
-            nodes.push(*pts.last().unwrap());
-            node_remap.insert(*en, id);
-            id
-        };
-        chain_node_ids.push((compact_s, compact_e));
-    }
-
-    let out: Vec<Vec<Pt>> = processed.into_iter().map(|(pts, _, _)| pts).collect();
-
-    Ok((out, nodes, chain_node_ids))
+/// Process multiple independent curve-sets in parallel using Rayon.
+///
+/// Each element of `curve_sets` is an independent input (list of polylines)
+/// that would normally be passed to `topologize`. All sets share the same
+/// parameters. The GIL is released for the duration of the parallel work.
+///
+/// Returns a list of (chains, nodes, chain_node_ids) tuples, one per input set.
+#[pyfunction]
+#[pyo3(signature = (curve_sets, buffer_distance, simplification=None, min_tip_length=None, junction_merge_fraction=None))]
+pub fn topologize_batch(
+    py: Python<'_>,
+    curve_sets: Vec<Vec<Vec<Pt>>>,
+    buffer_distance: f64,
+    simplification: Option<f64>,
+    min_tip_length: Option<f64>,
+    junction_merge_fraction: Option<f64>,
+) -> PyResult<Vec<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)>> {
+    use rayon::prelude::*;
+    Ok(py.detach(|| {
+        curve_sets
+            .par_iter()
+            .map(|curves| {
+                topologize_inner(curves, buffer_distance, simplification, min_tip_length, junction_merge_fraction)
+            })
+            .collect()
+    }))
 }
