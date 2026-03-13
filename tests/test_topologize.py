@@ -398,3 +398,21 @@ def test_perpendicular_crossing_no_merge_preserves_t_junctions():
     assert np.sum(result.node_degree >= 3) >= 2, (
         f"Expected at least two degree-3 T-junctions, got degrees: {result.node_degree}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Subdivision ratio
+# ---------------------------------------------------------------------------
+
+def test_subdivision_ratio_produces_valid_output():
+    """subdivision_ratio parameter should produce valid output without errors."""
+    curves = crossing_curves()
+    for ratio in [0.1, 0.5, 1.0, 10.0]:
+        result = topologize(curves, inflation_radius=0.4, subdivision_ratio=ratio)
+        assert isinstance(result.chains, list)
+        assert len(result.chains) >= 1
+        for chain in result.chains:
+            assert isinstance(chain, np.ndarray)
+            assert chain.ndim == 2
+            assert chain.shape[1] == 2
+            assert np.all(np.isfinite(chain))

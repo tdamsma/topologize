@@ -81,13 +81,14 @@ fn smooth_chain_taubin(pts: &[Pt], iterations: usize, lambda: f64, mu: f64) -> V
         return pts.to_vec();
     }
     let mut current = pts.to_vec();
+    let mut scratch = current.clone();
     for _ in 0..iterations {
         for &factor in &[lambda, mu] {
-            let prev = current.clone();
+            scratch.copy_from_slice(&current);
             for i in 1..n - 1 {
-                let (px, py) = prev[i - 1];
-                let (cx, cy) = prev[i];
-                let (nx, ny) = prev[i + 1];
+                let (px, py) = scratch[i - 1];
+                let (cx, cy) = scratch[i];
+                let (nx, ny) = scratch[i + 1];
                 let lx = (px + nx) / 2.0 - cx;
                 let ly = (py + ny) / 2.0 - cy;
                 current[i] = (cx + factor * lx, cy + factor * ly);
@@ -322,27 +323,25 @@ fn refine_ring_from_index(
 /// Returns a flat list of triangles across all polygons, each as
 /// ((x0,y0),(x1,y1),(x2,y2)).
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, subdivision_ratio=None, subdivision_spread=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, subdivision_ratio=None))]
 pub fn triangulate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     subdivision_ratio: Option<f64>,
-    subdivision_spread: Option<f64>,
 ) -> Vec<(Pt, Pt, Pt)> {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size);
     let rdp_boundary = feature_size * 0.15;
     let max_seg = feature_size * 1.5;
-    let ratio = subdivision_ratio.unwrap_or(0.5);
-    let _ = subdivision_spread; // reserved for future use
+    let ratio = subdivision_ratio.unwrap_or(0.5).max(0.01);
     // Step 1: baseline subdivision of all rings.
     // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
     // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
     let index_min_angle = 45.0_f64.to_radians();
-    let mut base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+    let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
             let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
@@ -351,25 +350,31 @@ pub fn triangulate_curves(
         })
         .collect();
 
-    // Step 2: build curvature index from all rings.
-    let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
-    for (outer, holes) in &base_polygons {
-        curv_index.add_ring(outer, index_min_angle);
-        for h in holes {
-            curv_index.add_ring(h, index_min_angle);
-        }
-    }
-
-    // Step 3: refine each ring using the shared index.
+    // Steps 2-3: curvature-adaptive refinement (skip when buffer_distance <= 0).
     let mut out = Vec::new();
-    for (outer, holes) in base_polygons {
-        let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
-        let holes: Vec<Vec<Pt>> = holes
-            .iter()
-            .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
-            .collect();
-        if outer.len() >= 3 {
-            out.extend(skeleton_cdt::get_triangles(&outer, &holes));
+    if buffer_distance > 0.0 {
+        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+        for (outer, holes) in &base_polygons {
+            curv_index.add_ring(outer, index_min_angle);
+            for h in holes {
+                curv_index.add_ring(h, index_min_angle);
+            }
+        }
+        for (outer, holes) in base_polygons {
+            let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
+            let holes: Vec<Vec<Pt>> = holes
+                .iter()
+                .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
+                .collect();
+            if outer.len() >= 3 {
+                out.extend(skeleton_cdt::get_triangles(&outer, &holes));
+            }
+        }
+    } else {
+        for (outer, holes) in base_polygons {
+            if outer.len() >= 3 {
+                out.extend(skeleton_cdt::get_triangles(&outer, &holes));
+            }
         }
     }
     out
@@ -423,7 +428,6 @@ fn topologize_inner(
     per_curve_widths: Option<&[Vec<f64>]>,
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
-    subdivision_spread: Option<f64>,
 ) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>) {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
@@ -435,13 +439,12 @@ fn topologize_inner(
 
     let rdp_boundary = feature_size * 0.15;
     let max_seg = feature_size * 1.5;
-    let ratio = subdivision_ratio.unwrap_or(0.5);
-    let _ = subdivision_spread; // reserved for future use
+    let ratio = subdivision_ratio.unwrap_or(0.5).max(0.01);
     // Step 1: baseline subdivision of all rings.
     // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
     // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
     let index_min_angle = 45.0_f64.to_radians();
-    let mut base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+    let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
             let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
@@ -450,27 +453,29 @@ fn topologize_inner(
         })
         .collect();
 
-    // Step 2: build curvature index from all rings.
-    let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
-    for (outer, holes) in &base_polygons {
-        curv_index.add_ring(outer, index_min_angle);
-        for h in holes {
-            curv_index.add_ring(h, index_min_angle);
+    // Steps 2-3: curvature-adaptive refinement (skip when buffer_distance <= 0).
+    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = if buffer_distance > 0.0 {
+        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+        for (outer, holes) in &base_polygons {
+            curv_index.add_ring(outer, index_min_angle);
+            for h in holes {
+                curv_index.add_ring(h, index_min_angle);
+            }
         }
-    }
-
-    // Step 3: refine each ring using the shared index.
-    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = base_polygons
-        .into_iter()
-        .map(|(outer, holes)| {
-            let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
-            let holes = holes
-                .iter()
-                .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
-                .collect();
-            (outer, holes)
-        })
-        .collect();
+        base_polygons
+            .into_iter()
+            .map(|(outer, holes)| {
+                let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
+                let holes = holes
+                    .iter()
+                    .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
+                    .collect();
+                (outer, holes)
+            })
+            .collect()
+    } else {
+        base_polygons
+    };
 
     let snap_tol = feature_size / 20.0;
     let rdp_tol = simplification.unwrap_or(feature_size / 10.0);
@@ -581,7 +586,7 @@ fn topologize_inner(
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None, subdivision_spread=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -593,9 +598,8 @@ pub fn topologize(
     per_curve_widths: Option<Vec<Vec<f64>>>,
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
-    subdivision_spread: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio, subdivision_spread)))
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
@@ -615,7 +619,7 @@ pub fn topologize_batch(
     Ok(py.detach(|| {
         jobs.par_iter()
             .map(|(curves, bd, fs, simp, tip, jmf)| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, None);
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None);
                 (chains, nodes, ids)
             })
             .collect()

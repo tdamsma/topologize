@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn no_zones_returns_original() {
         let curves = vec![vec![(0.0, 0.0), (10.0, 0.0)]];
-        let (out, _) = targeted_subdivide(&curves, None, 1.0);
+        let (out, _) = targeted_subdivide(&curves, None, 1.0, 0.5);
         assert_eq!(out[0].len(), curves[0].len());
     }
 
@@ -368,7 +368,7 @@ mod tests {
             vec![(0.0, 0.0), (10.0, 10.0)],
             vec![(0.0, 10.0), (10.0, 0.0)],
         ];
-        let (out, _) = targeted_subdivide(&curves, None, 1.0);
+        let (out, _) = targeted_subdivide(&curves, None, 1.0, 0.5);
         // Both curves should have more points than the originals.
         assert!(out[0].len() > 2, "curve 0 should be subdivided");
         assert!(out[1].len() > 2, "curve 1 should be subdivided");
@@ -378,7 +378,7 @@ mod tests {
     fn sharp_corner_subdivided() {
         // L-shaped curve with a 90° corner.
         let curves = vec![vec![(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)]];
-        let (out, _) = targeted_subdivide(&curves, None, 1.0);
+        let (out, _) = targeted_subdivide(&curves, None, 1.0, 0.5);
         assert!(out[0].len() > 3, "sharp corner should be subdivided");
     }
 
@@ -389,7 +389,7 @@ mod tests {
             vec![(0.0, 10.0), (10.0, 0.0)],
         ];
         let widths = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
-        let (out, out_w) = targeted_subdivide(&curves, Some(&widths), 1.0);
+        let (out, out_w) = targeted_subdivide(&curves, Some(&widths), 1.0, 0.5);
         let ow = out_w.unwrap();
         for (ci, curve) in out.iter().enumerate() {
             assert_eq!(

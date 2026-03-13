@@ -31,7 +31,7 @@ print(f"{len(layers)} layers, Z = {[lay['z'] for lay in layers]}")
 # %% [markdown]
 # ## Compare subdivision settings
 #
-# - **off**: `subdivision_ratio=100` effectively disables curvature refinement
+# - **off**: `subdivision_ratio=100` effectively minimizes curvature refinement
 # - **default**: no overrides — uses `ratio=0.5` (at 90°, max seg = 0.5×bd)
 # - **tight**: `subdivision_ratio=0.3` — stronger refinement at corners
 

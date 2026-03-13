@@ -281,7 +281,6 @@ def triangulate(
     *,
     feature_size: float | None = None,
     subdivision_ratio: float | None = None,
-    subdivision_spread: float | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
     """
     Return the CDT triangles used internally by :func:`topologize`.
@@ -297,10 +296,8 @@ def triangulate(
     feature_size : float, optional
         Scale parameter for derived thresholds. Defaults to
         ``inflation_radius`` (float) or ``median(all widths)`` (list).
-    subdivision_ratio : float or None, default None (= 0.1)
+    subdivision_ratio : float or None, default None (= 0.5)
         Boundary densification ratio at 90° curvature (see :func:`topologize`).
-    subdivision_spread : float or None, default None
-        Curvature bleed distance along the boundary ring (see :func:`topologize`).
 
     Returns
     -------
@@ -316,8 +313,6 @@ def triangulate(
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
-    if subdivision_spread is not None:
-        kwargs["subdivision_spread"] = float(subdivision_spread)
 
     return _tri(_convert_curves(curves_xy), bd, fs, **kwargs)
 
@@ -370,7 +365,6 @@ def topologize(
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
     subdivision_ratio: float | None = None,
-    subdivision_spread: float | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -407,17 +401,13 @@ def topologize(
         If True, populate ``chain_widths`` with the estimated contour width at
         each chain point (2 x distance to the nearest inflated polygon boundary
         vertex). Disabled by default to avoid the O(S x B) scan overhead.
-    subdivision_ratio : float or None, default None (= 0.1)
+    subdivision_ratio : float or None, default None (= 0.5)
         Controls boundary densification near high-curvature regions. At a 90°
         turn, the max segment length becomes ``ratio * inflation_radius``.
         Smaller values produce finer CDT near junctions/corners. The effect
-        scales linearly with turning angle (45° gets half the densification
-        of 90°). Set to a large value (e.g. 100) to disable.
-    subdivision_spread : float or None, default None (= 2 * inflation_radius)
-        Euclidean radius for curvature influence spread. High-curvature vertices
-        propagate their densification to all boundary vertices within this
-        distance, including across the polygon width. This ensures both sides
-        of a T-junction get refined. Set to 0 for no spread.
+        scales quadratically with turning angle (most refinement concentrated
+        near 90°, gentle at lower angles). Set to a large value (e.g. 100)
+        to effectively minimize refinement.
 
     Returns
     -------
@@ -448,8 +438,6 @@ def topologize(
         kwargs["compute_widths"] = True
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
-    if subdivision_spread is not None:
-        kwargs["subdivision_spread"] = float(subdivision_spread)
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)
