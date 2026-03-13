@@ -26,7 +26,7 @@ from topologize import topologize
 # %%
 data = json.load(open(Path(__file__).parent.parent.parent / "topo_variability_input.json"))
 layers = data["layers"]
-print(f"{len(layers)} layers, Z = {[l['z'] for l in layers]}")
+print(f"{len(layers)} layers, Z = {[lay['z'] for lay in layers]}")
 
 # %% [markdown]
 # ## Compare subdivision settings
