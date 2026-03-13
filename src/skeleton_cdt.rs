@@ -19,9 +19,11 @@ type Segment = (Pt, Pt);
 ///
 /// `min_edge_lengths`: per-boundary-point minimum edge length. Internal CDT
 /// edges shorter than the local minimum (of both endpoints) are treated as
-/// same-side (ignored). Set each entry to `2.0 * local_buffer_width` to
-/// suppress short cross-edges that square endcaps create at polygon corners.
-/// Pass an empty slice to disable length filtering entirely.
+/// same-side (ignored). Typically set to `2.0 * local_buffer_width` minus
+/// any boundary simplification tolerance, to suppress short cross-edges that
+/// square endcaps create at polygon corners without filtering legitimate
+/// edges in a simplified polygon. Pass an empty slice to disable length
+/// filtering entirely.
 pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>], min_edge_lengths: &[f64]) -> Vec<Segment> {
     midpoint_segments(outer, holes, min_edge_lengths)
 }
@@ -138,10 +140,10 @@ fn midpoint_segments(
                 return true;
             }
         }
-        // Too-short cross-edge: the sharp corners of square endcaps
-        // produce narrow triangles with cross-edges shorter than the
-        // local polygon width, causing "snake tongue" split artifacts.
-        // Use the minimum threshold of both endpoints (conservative).
+        // Too-short edge filter: square endcap corners produce narrow
+        // triangles whose cross-edges are shorter than the per-point
+        // threshold provided by the caller, causing "snake tongue"
+        // artifacts. Use the minimum of both endpoints (conservative).
         if has_len_filter {
             let local_min = min_edge_lengths[e.0].min(min_edge_lengths[e.1]);
             let local_min_sq = local_min * local_min;
