@@ -297,7 +297,9 @@ def triangulate(
         Scale parameter for derived thresholds. Defaults to
         ``inflation_radius`` (float) or ``median(all widths)`` (list).
     subdivision_ratio : float or None, default None (= 0.5)
-        Boundary densification ratio at 90° curvature (see :func:`topologize`).
+        Boundary densification ratio at 90° curvature. Set to 0 to skip
+        curvature-adaptive refinement entirely. See :func:`topologize` for
+        full description.
 
     Returns
     -------
@@ -402,12 +404,15 @@ def topologize(
         each chain point (2 x distance to the nearest inflated polygon boundary
         vertex). Disabled by default to avoid the O(S x B) scan overhead.
     subdivision_ratio : float or None, default None (= 0.5)
-        Controls boundary densification near high-curvature regions. At a 90°
-        turn, the max segment length becomes ``ratio * inflation_radius``.
-        Smaller values produce finer CDT near junctions/corners. The effect
-        scales quadratically with turning angle (most refinement concentrated
-        near 90°, gentle at lower angles). Set to a large value (e.g. 100)
-        to effectively minimize refinement.
+        Controls boundary densification near high-curvature regions (vertices
+        with turning angle >= 45°). At a 90° turn, the max boundary segment
+        length becomes ``ratio * inflation_radius``. Smaller values produce
+        finer CDT triangulation near junctions and corners. The effect scales
+        quadratically with turning angle (most refinement near 90°, gentle at
+        lower angles) and spatially decays from full strength within
+        ``3 * inflation_radius`` to zero at ``4 * inflation_radius`` from the
+        high-curvature vertex. Set to 0 to skip curvature-adaptive refinement
+        entirely.
 
     Returns
     -------

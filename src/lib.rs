@@ -4,7 +4,6 @@ mod graph;
 mod inflate;
 mod python;
 mod skeleton_cdt;
-mod subdivide;
 
 use pyo3::prelude::*;
 

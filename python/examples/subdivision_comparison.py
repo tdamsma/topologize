@@ -24,7 +24,7 @@ from topologize import topologize
 # The inputs differ only by ~4mm in slicing height.
 
 # %%
-data = json.load(open(Path(__file__).parent.parent.parent / "topo_variability_input.json"))
+data = json.load(open(Path(__file__).parent / "data" / "topo_variability_input.json"))
 layers = data["layers"]
 print(f"{len(layers)} layers, Z = {[lay['z'] for lay in layers]}")
 

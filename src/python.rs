@@ -285,9 +285,14 @@ struct CurvatureIndex {
 
 impl CurvatureIndex {
     fn new(search_radius: f64) -> Self {
+        let cell_size = if search_radius > 0.0 && search_radius.is_finite() {
+            search_radius
+        } else {
+            1.0 // safe fallback; queries will simply find nothing
+        };
         Self {
             entries: Vec::new(),
-            cell_size: search_radius,
+            cell_size,
             grid: std::collections::HashMap::new(),
         }
     }
@@ -362,8 +367,9 @@ impl CurvatureIndex {
 /// Curvature-adaptive refinement of a closed polygon ring using a spatial
 /// index of high-curvature vertices (potentially from multiple rings).
 ///
-/// For each edge, queries the index within `search_radius` to find the
-/// highest nearby turning angle, then subdivides accordingly.
+/// For each edge, queries the index to find the highest nearby turning angle
+/// (full strength within `3 * buffer_distance`, linear decay to zero at
+/// `4 * buffer_distance`), then subdivides accordingly.
 /// Only adds points — never removes or moves existing vertices.
 fn refine_ring_from_index(
     pts: &[Pt],
@@ -421,6 +427,59 @@ fn refine_ring_from_index(
     result
 }
 
+/// Shared boundary preprocessing: RDP simplify, baseline subdivision,
+/// then optional curvature-adaptive refinement.
+fn preprocess_boundaries(
+    polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)>,
+    feature_size: f64,
+    buffer_distance: f64,
+    subdivision_ratio: Option<f64>,
+) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
+    let rdp_boundary = feature_size * 0.15;
+    let max_seg = feature_size * 1.5;
+    let ratio = match subdivision_ratio {
+        Some(r) if r > 0.0 => r.max(0.01),
+        Some(r) => r, // 0 or negative: disables refinement
+        None => 0.5,
+    };
+
+    // Step 1: baseline subdivision of all rings.
+    let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+        .into_iter()
+        .map(|(outer, holes)| {
+            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
+            (outer, holes)
+        })
+        .collect();
+
+    // Step 2: curvature-adaptive refinement (skip when ratio<=0 or buffer_distance <= 0).
+    if buffer_distance > 0.0 && ratio > 0.0 {
+        // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
+        let index_min_angle = 45.0_f64.to_radians();
+        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+        for (outer, holes) in &base_polygons {
+            curv_index.add_ring(outer, index_min_angle);
+            for h in holes {
+                curv_index.add_ring(h, index_min_angle);
+            }
+        }
+        base_polygons
+            .into_iter()
+            .map(|(outer, holes)| {
+                let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
+                let holes = holes
+                    .iter()
+                    .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
+                    .collect();
+                (outer, holes)
+            })
+            .collect()
+    } else {
+        base_polygons
+    }
+}
+
 /// Return the CDT triangles for each inflated polygon, using the same
 /// boundary preprocessing (RDP simplification + subdivision) as `topologize`.
 /// Useful for visualising and debugging the triangulation step.
@@ -439,47 +498,12 @@ pub fn triangulate_curves(
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size);
-    let rdp_boundary = feature_size * 0.15;
-    let max_seg = feature_size * 1.5;
-    let ratio = subdivision_ratio.unwrap_or(0.5).max(0.01);
-    // Step 1: baseline subdivision of all rings.
-    // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
-    // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
-    let index_min_angle = 45.0_f64.to_radians();
-    let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-        .into_iter()
-        .map(|(outer, holes)| {
-            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
-            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
-            (outer, holes)
-        })
-        .collect();
+    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio);
 
-    // Steps 2-3: curvature-adaptive refinement (skip when buffer_distance <= 0).
     let mut out = Vec::new();
-    if buffer_distance > 0.0 {
-        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
-        for (outer, holes) in &base_polygons {
-            curv_index.add_ring(outer, index_min_angle);
-            for h in holes {
-                curv_index.add_ring(h, index_min_angle);
-            }
-        }
-        for (outer, holes) in base_polygons {
-            let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
-            let holes: Vec<Vec<Pt>> = holes
-                .iter()
-                .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
-                .collect();
-            if outer.len() >= 3 {
-                out.extend(skeleton_cdt::get_triangles(&outer, &holes));
-            }
-        }
-    } else {
-        for (outer, holes) in base_polygons {
-            if outer.len() >= 3 {
-                out.extend(skeleton_cdt::get_triangles(&outer, &holes));
-            }
+    for (outer, holes) in polygons {
+        if outer.len() >= 3 {
+            out.extend(skeleton_cdt::get_triangles(&outer, &holes));
         }
     }
     out
@@ -541,46 +565,9 @@ fn topologize_inner(
         .collect();
 
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths, feature_size);
+    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio);
 
     let rdp_boundary = feature_size * 0.15;
-    let max_seg = feature_size * 1.5;
-    let ratio = subdivision_ratio.unwrap_or(0.5).max(0.01);
-    // Step 1: baseline subdivision of all rings.
-    // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
-    // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
-    let index_min_angle = 45.0_f64.to_radians();
-    let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-        .into_iter()
-        .map(|(outer, holes)| {
-            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
-            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
-            (outer, holes)
-        })
-        .collect();
-
-    // Steps 2-3: curvature-adaptive refinement (skip when buffer_distance <= 0).
-    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = if buffer_distance > 0.0 {
-        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
-        for (outer, holes) in &base_polygons {
-            curv_index.add_ring(outer, index_min_angle);
-            for h in holes {
-                curv_index.add_ring(h, index_min_angle);
-            }
-        }
-        base_polygons
-            .into_iter()
-            .map(|(outer, holes)| {
-                let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
-                let holes = holes
-                    .iter()
-                    .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
-                    .collect();
-                (outer, holes)
-            })
-            .collect()
-    } else {
-        base_polygons
-    };
 
     let snap_tol = feature_size / 20.0;
     let rdp_tol = simplification.unwrap_or(feature_size / 10.0);
