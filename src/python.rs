@@ -71,32 +71,30 @@ fn straighten_terminal_start(pts: &mut Vec<Pt>) {
     pts[0] = ((ex + proj_x) / 2.0, (ey + proj_y) / 2.0);
 }
 
-/// One pass of projection smoothing on an open polyline.
-/// Each interior point moves halfway toward its projection on the line
-/// through its two neighbours, reducing the CDT zigzag without moving
-/// endpoints or introducing new points.
-fn smooth_chain_pass(pts: &[Pt]) -> Vec<Pt> {
+/// Taubin smoothing (λ|μ alternating filter) for an open polyline.
+/// Each iteration applies a Laplacian shrink step (factor λ) followed by
+/// an expand step (factor μ, negative) to remove high-frequency zigzag
+/// without net shrinkage. Endpoints are preserved.
+fn smooth_chain_taubin(pts: &[Pt], iterations: usize, lambda: f64, mu: f64) -> Vec<Pt> {
     let n = pts.len();
     if n < 3 {
         return pts.to_vec();
     }
-    let mut out = pts.to_vec();
-    for i in 1..n - 1 {
-        let (px, py) = pts[i - 1];
-        let (cx, cy) = pts[i];
-        let (nx, ny) = pts[i + 1];
-        let dx = nx - px;
-        let dy = ny - py;
-        let len_sq = dx * dx + dy * dy;
-        if len_sq == 0.0 {
-            continue;
+    let mut current = pts.to_vec();
+    for _ in 0..iterations {
+        for &factor in &[lambda, mu] {
+            let prev = current.clone();
+            for i in 1..n - 1 {
+                let (px, py) = prev[i - 1];
+                let (cx, cy) = prev[i];
+                let (nx, ny) = prev[i + 1];
+                let lx = (px + nx) / 2.0 - cx;
+                let ly = (py + ny) / 2.0 - cy;
+                current[i] = (cx + factor * lx, cy + factor * ly);
+            }
         }
-        let t = ((cx - px) * dx + (cy - py) * dy) / len_sq;
-        let proj_x = px + t * dx;
-        let proj_y = py + t * dy;
-        out[i] = ((cx + proj_x) / 2.0, (cy + proj_y) / 2.0);
     }
-    out
+    current
 }
 
 /// Ramer-Douglas-Peucker simplification of an open polyline.
@@ -166,6 +164,157 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
     result
 }
 
+/// Spatial index of high-curvature boundary vertices.
+///
+/// Collects turning angles from all polygon rings, keeping only vertices
+/// above `min_angle`. Stored in a flat grid for fast radius queries.
+struct CurvatureIndex {
+    /// (x, y, turning_angle) for each high-curvature vertex.
+    entries: Vec<(f64, f64, f64)>,
+    /// Grid cell size (= search radius for fast lookup).
+    cell_size: f64,
+    /// Grid buckets: cell coord → indices into `entries`.
+    grid: std::collections::HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl CurvatureIndex {
+    fn new(search_radius: f64) -> Self {
+        Self {
+            entries: Vec::new(),
+            cell_size: search_radius,
+            grid: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add all high-curvature vertices from a closed ring.
+    fn add_ring(&mut self, pts: &[Pt], min_angle: f64) {
+        let n = pts.len();
+        if n < 3 {
+            return;
+        }
+        for i in 0..n {
+            let prev = pts[(i + n - 1) % n];
+            let curr = pts[i];
+            let next = pts[(i + 1) % n];
+            let d1 = (curr.0 - prev.0, curr.1 - prev.1);
+            let d2 = (next.0 - curr.0, next.1 - curr.1);
+            let len1 = (d1.0 * d1.0 + d1.1 * d1.1).sqrt();
+            let len2 = (d2.0 * d2.0 + d2.1 * d2.1).sqrt();
+            if len1 < 1e-12 || len2 < 1e-12 {
+                continue;
+            }
+            let cos_a = ((d1.0 * d2.0 + d1.1 * d2.1) / (len1 * len2)).clamp(-1.0, 1.0);
+            let angle = cos_a.acos();
+            if angle >= min_angle {
+                let idx = self.entries.len();
+                self.entries.push((curr.0, curr.1, angle));
+                let inv = 1.0 / self.cell_size;
+                let cx = (curr.0 * inv).floor() as i64;
+                let cy = (curr.1 * inv).floor() as i64;
+                self.grid.entry((cx, cy)).or_default().push(idx);
+            }
+        }
+    }
+
+    /// Query: highest (distance-weighted) turning angle near `(px, py)`.
+    ///
+    /// Full strength within `inner_radius`, linear decay to zero at
+    /// `outer_radius`. Returns the max decayed angle across all entries.
+    fn max_angle_near(&self, px: f64, py: f64, inner_radius: f64, outer_radius: f64) -> f64 {
+        let inv = 1.0 / self.cell_size;
+        let r_sq = outer_radius * outer_radius;
+        let cx0 = ((px - outer_radius) * inv).floor() as i64;
+        let cx1 = ((px + outer_radius) * inv).floor() as i64;
+        let cy0 = ((py - outer_radius) * inv).floor() as i64;
+        let cy1 = ((py + outer_radius) * inv).floor() as i64;
+        let mut best = 0.0_f64;
+        for cx in cx0..=cx1 {
+            for cy in cy0..=cy1 {
+                if let Some(bucket) = self.grid.get(&(cx, cy)) {
+                    for &idx in bucket {
+                        let (ex, ey, angle) = self.entries[idx];
+                        let dx = ex - px;
+                        let dy = ey - py;
+                        let dist_sq = dx * dx + dy * dy;
+                        if dist_sq <= r_sq {
+                            let dist = dist_sq.sqrt();
+                            let frac = if dist <= inner_radius {
+                                1.0
+                            } else {
+                                1.0 - ((dist - inner_radius) / (outer_radius - inner_radius))
+                            };
+                            best = best.max(angle * frac);
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+}
+
+/// Curvature-adaptive refinement of a closed polygon ring using a spatial
+/// index of high-curvature vertices (potentially from multiple rings).
+///
+/// For each edge, queries the index within `search_radius` to find the
+/// highest nearby turning angle, then subdivides accordingly.
+/// Only adds points — never removes or moves existing vertices.
+fn refine_ring_from_index(
+    pts: &[Pt],
+    index: &CurvatureIndex,
+    buffer_distance: f64,
+    ratio_90: f64,
+) -> Vec<Pt> {
+    let n = pts.len();
+    if n < 3 || ratio_90 <= 0.0 {
+        return pts.to_vec();
+    }
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let min_angle = 15.0_f64.to_radians();
+    let min_len_90 = ratio_90 * buffer_distance;
+
+    let mut result: Vec<Pt> = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        result.push(a);
+
+        // Query at edge midpoint for the highest nearby curvature.
+        let mx = (a.0 + b.0) * 0.5;
+        let my = (a.1 + b.1) * 0.5;
+        let inner_r = buffer_distance * 3.0;
+        let outer_r = buffer_distance * 4.0;
+        let max_angle = index.max_angle_near(mx, my, inner_r, outer_r);
+
+        let effective_max = if max_angle < min_angle {
+            f64::INFINITY
+        } else {
+            // Cap at 90° — angles above don't need more triangles.
+            let clamped = max_angle.min(half_pi);
+            let t = ((clamped - min_angle) / (half_pi - min_angle)).clamp(0.0, 1.0);
+            // Quadratic: most refinement concentrated near 90°,
+            // gentle at lower angles.
+            let t2 = t * t;
+            // At 15° → buffer_distance (barely any refinement).
+            // At 90° → min_len_90 (= ratio × buffer_distance).
+            let max_at_threshold = buffer_distance;
+            max_at_threshold + t2 * (min_len_90 - max_at_threshold)
+        };
+
+        let dx = b.0 - a.0;
+        let dy = b.1 - a.1;
+        let seg_len = (dx * dx + dy * dy).sqrt();
+        if seg_len > effective_max {
+            let steps = (seg_len / effective_max).ceil() as usize;
+            for k in 1..steps {
+                let frac = k as f64 / steps as f64;
+                result.push((a.0 + frac * dx, a.1 + frac * dy));
+            }
+        }
+    }
+    result
+}
+
 /// Return the CDT triangles for each inflated polygon, using the same
 /// boundary preprocessing (RDP simplification + subdivision) as `topologize`.
 /// Useful for visualising and debugging the triangulation step.
@@ -173,24 +322,51 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
 /// Returns a flat list of triangles across all polygons, each as
 /// ((x0,y0),(x1,y1),(x2,y2)).
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, subdivision_ratio=None, subdivision_spread=None))]
 pub fn triangulate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
+    subdivision_ratio: Option<f64>,
+    subdivision_spread: Option<f64>,
 ) -> Vec<(Pt, Pt, Pt)> {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size);
     let rdp_boundary = feature_size * 0.15;
     let max_seg = feature_size * 1.5;
+    let ratio = subdivision_ratio.unwrap_or(0.5);
+    let _ = subdivision_spread; // reserved for future use
+    // Step 1: baseline subdivision of all rings.
+    // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
+    // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
+    let index_min_angle = 45.0_f64.to_radians();
+    let mut base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+        .into_iter()
+        .map(|(outer, holes)| {
+            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
+            (outer, holes)
+        })
+        .collect();
+
+    // Step 2: build curvature index from all rings.
+    let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+    for (outer, holes) in &base_polygons {
+        curv_index.add_ring(outer, index_min_angle);
+        for h in holes {
+            curv_index.add_ring(h, index_min_angle);
+        }
+    }
+
+    // Step 3: refine each ring using the shared index.
     let mut out = Vec::new();
-    for (outer, holes) in polygons {
-        let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+    for (outer, holes) in base_polygons {
+        let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
         let holes: Vec<Vec<Pt>> = holes
             .iter()
-            .map(|h| subdivide_ring(h, max_seg))
+            .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
             .collect();
         if outer.len() >= 3 {
             out.extend(skeleton_cdt::get_triangles(&outer, &holes));
@@ -246,6 +422,8 @@ fn topologize_inner(
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<&[Vec<f64>]>,
     compute_widths: bool,
+    subdivision_ratio: Option<f64>,
+    subdivision_spread: Option<f64>,
 ) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>) {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
@@ -257,13 +435,38 @@ fn topologize_inner(
 
     let rdp_boundary = feature_size * 0.15;
     let max_seg = feature_size * 1.5;
-    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+    let ratio = subdivision_ratio.unwrap_or(0.5);
+    let _ = subdivision_spread; // reserved for future use
+    // Step 1: baseline subdivision of all rings.
+    // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
+    // Refinement threshold: 15° in refine_ring_from_index (gentler scaling start).
+    let index_min_angle = 45.0_f64.to_radians();
+    let mut base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
             let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
+            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
+            (outer, holes)
+        })
+        .collect();
+
+    // Step 2: build curvature index from all rings.
+    let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+    for (outer, holes) in &base_polygons {
+        curv_index.add_ring(outer, index_min_angle);
+        for h in holes {
+            curv_index.add_ring(h, index_min_angle);
+        }
+    }
+
+    // Step 3: refine each ring using the shared index.
+    let polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = base_polygons
+        .into_iter()
+        .map(|(outer, holes)| {
+            let outer = refine_ring_from_index(&outer, &curv_index, buffer_distance, ratio);
             let holes = holes
                 .iter()
-                .map(|h| subdivide_ring(h, max_seg))
+                .map(|h| refine_ring_from_index(h, &curv_index, buffer_distance, ratio))
                 .collect();
             (outer, holes)
         })
@@ -318,9 +521,7 @@ fn topologize_inner(
         .map(|chain| {
             let graph::Chain { mut pts, start_terminal, end_terminal, start_node, end_node } =
                 chain;
-            pts = smooth_chain_pass(&pts);
-            pts = smooth_chain_pass(&pts);
-            pts = smooth_chain_pass(&pts);
+            pts = smooth_chain_taubin(&pts, 3, 0.5, -0.53);
             if end_terminal {
                 straighten_terminal_end(&mut pts);
             }
@@ -380,7 +581,7 @@ fn topologize_inner(
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None, subdivision_spread=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -391,8 +592,10 @@ pub fn topologize(
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     compute_widths: bool,
+    subdivision_ratio: Option<f64>,
+    subdivision_spread: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths)))
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio, subdivision_spread)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
@@ -412,7 +615,7 @@ pub fn topologize_batch(
     Ok(py.detach(|| {
         jobs.par_iter()
             .map(|(curves, bd, fs, simp, tip, jmf)| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false);
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, None);
                 (chains, nodes, ids)
             })
             .collect()
