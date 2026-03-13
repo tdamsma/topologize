@@ -31,7 +31,7 @@ fn inflate_curve_variable(
     // arc_tol is derived from the global buffer_distance, not per-vertex widths.
     // End-cap smoothness is therefore approximate when widths vary widely.
     let mut co = ClipperOffset::new(2.0, arc_tol * scale, false, false);
-    co.add_path(&path64, JoinType::Square, EndType::Round);
+    co.add_path(&path64, JoinType::Square, EndType::Square);
     // Enforce that the widths slice matches the path length. A mismatch means
     // the caller passed wrong data; clamping would silently produce incorrect
     // geometry. Callers (Python wrapper and internal Rust code) are responsible
@@ -82,11 +82,11 @@ pub fn inflate(
                     inflate_curve_variable(pl, &widths_all[i], arc_tol, 6)
                 } else {
                     let path: Vec<Point<f64>> = pl.iter().map(|&(x, y)| Point::new(x, y)).collect();
-                    inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Round, 0.0, 6, arc_tol)
+                    inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Square, 0.0, 6, arc_tol)
                 }
             } else {
                 let path: Vec<Point<f64>> = pl.iter().map(|&(x, y)| Point::new(x, y)).collect();
-                inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Round, 0.0, 6, arc_tol)
+                inflate_paths_d(&vec![path], buffer_distance, JoinType::Square, EndType::Square, 0.0, 6, arc_tol)
             };
         all_inflated.extend(inflated);
     }

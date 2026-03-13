@@ -172,8 +172,16 @@ def test_merging_at_larger_buffer():
     assert max(y_ranges) > 5.0
 
 
+def _long_chains(result, min_length):
+    """Count chains longer than min_length (filters out endcap stubs)."""
+    return sum(
+        1 for c in result.chains
+        if np.sum(np.sqrt(np.sum(np.diff(c, axis=0) ** 2, axis=1))) > min_length
+    )
+
+
 def test_three_parallel_pairs_merge_progressively():
-    """More buffer → fewer total chains as three regions merge into one."""
+    """More buffer → fewer long chains as three regions merge into one."""
     curves = [
         np.array([[0.0, 0.0], [10.0, 0.0]]),
         np.array([[0.0, 0.3], [10.0, 0.3]]),
@@ -184,7 +192,8 @@ def test_three_parallel_pairs_merge_progressively():
     ]
     result_small = topologize(curves, inflation_radius=0.5)
     result_large = topologize(curves, inflation_radius=2.0)
-    assert len(result_large.chains) <= len(result_small.chains)
+    # Compare only chains longer than 5 units to ignore short endcap stubs
+    assert _long_chains(result_large, 5.0) <= _long_chains(result_small, 5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -389,3 +398,21 @@ def test_perpendicular_crossing_no_merge_preserves_t_junctions():
     assert np.sum(result.node_degree >= 3) >= 2, (
         f"Expected at least two degree-3 T-junctions, got degrees: {result.node_degree}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Subdivision ratio
+# ---------------------------------------------------------------------------
+
+def test_subdivision_ratio_produces_valid_output():
+    """subdivision_ratio parameter should produce valid output without errors."""
+    curves = crossing_curves()
+    for ratio in [0.1, 0.5, 1.0, 10.0]:
+        result = topologize(curves, inflation_radius=0.4, subdivision_ratio=ratio)
+        assert isinstance(result.chains, list)
+        assert len(result.chains) >= 1
+        for chain in result.chains:
+            assert isinstance(chain, np.ndarray)
+            assert chain.ndim == 2
+            assert chain.shape[1] == 2
+            assert np.all(np.isfinite(chain))

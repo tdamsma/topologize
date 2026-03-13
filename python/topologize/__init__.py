@@ -280,6 +280,7 @@ def triangulate(
     inflation_radius: float | list[np.ndarray],
     *,
     feature_size: float | None = None,
+    subdivision_ratio: float | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
     """
     Return the CDT triangles used internally by :func:`topologize`.
@@ -295,6 +296,10 @@ def triangulate(
     feature_size : float, optional
         Scale parameter for derived thresholds. Defaults to
         ``inflation_radius`` (float) or ``median(all widths)`` (list).
+    subdivision_ratio : float or None, default None (= 0.5)
+        Boundary densification ratio at 90° curvature. Set to 0 to skip
+        curvature-adaptive refinement entirely. See :func:`topologize` for
+        full description.
 
     Returns
     -------
@@ -308,6 +313,8 @@ def triangulate(
     kwargs = {}
     if pcw is not None:
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
+    if subdivision_ratio is not None:
+        kwargs["subdivision_ratio"] = float(subdivision_ratio)
 
     return _tri(_convert_curves(curves_xy), bd, fs, **kwargs)
 
@@ -359,6 +366,7 @@ def topologize(
     min_tip_length: float | None = None,
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
+    subdivision_ratio: float | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -395,6 +403,16 @@ def topologize(
         If True, populate ``chain_widths`` with the estimated contour width at
         each chain point (2 x distance to the nearest inflated polygon boundary
         vertex). Disabled by default to avoid the O(S x B) scan overhead.
+    subdivision_ratio : float or None, default None (= 0.5)
+        Controls boundary densification near high-curvature regions (vertices
+        with turning angle >= 45°). At a 90° turn, the max boundary segment
+        length becomes ``ratio * inflation_radius``. Smaller values produce
+        finer CDT triangulation near junctions and corners. The effect scales
+        quadratically with turning angle (most refinement near 90°, gentle at
+        lower angles) and spatially decays from full strength within
+        ``3 * inflation_radius`` to zero at ``4 * inflation_radius`` from the
+        high-curvature vertex. Set to 0 to skip curvature-adaptive refinement
+        entirely.
 
     Returns
     -------
@@ -423,6 +441,8 @@ def topologize(
         ]
     if compute_widths:
         kwargs["compute_widths"] = True
+    if subdivision_ratio is not None:
+        kwargs["subdivision_ratio"] = float(subdivision_ratio)
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)

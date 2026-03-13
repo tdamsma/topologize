@@ -16,8 +16,16 @@ type Segment = (Pt, Pt);
 /// Uses a topological (boundary-hop) criterion to distinguish cross-edges
 /// (spanning the polygon width) from same-side edges (connecting nearby
 /// boundary vertices).  This adapts automatically to variable local width.
-pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
-    midpoint_segments(outer, holes)
+///
+/// `min_edge_lengths`: per-boundary-point minimum edge length. Internal CDT
+/// edges shorter than the local minimum (of both endpoints) are treated as
+/// same-side (ignored). Typically set to `2.0 * local_buffer_width` minus
+/// any boundary simplification tolerance, to suppress short cross-edges that
+/// square endcaps create at polygon corners without filtering legitimate
+/// edges in a simplified polygon. Pass an empty slice to disable length
+/// filtering entirely.
+pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>], min_edge_lengths: &[f64]) -> Vec<Segment> {
+    midpoint_segments(outer, holes, min_edge_lengths)
 }
 
 /// Return the raw CDT triangles as vertex triples, for debugging/visualisation.
@@ -50,6 +58,7 @@ pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
 fn midpoint_segments(
     outer: &[Pt],
     holes: &[Vec<Pt>],
+    min_edge_lengths: &[f64],
 ) -> Vec<Segment> {
     // Build flat point list and closed contours (last index == first).
     let mut all_pts: Vec<Pt> = Vec::new();
@@ -113,6 +122,8 @@ fn midpoint_segments(
     // vertices on the same side of the polygon — not a cross-edge.
     const HOP_THRESHOLD: usize = 2;
 
+    let has_len_filter = !min_edge_lengths.is_empty();
+
     let is_ignored = |e: (usize, usize)| -> bool {
         // Boundary edge (adjacent to only 1 triangle).
         if edge_to_count.get(&e).copied().unwrap_or(0) <= 1 {
@@ -126,6 +137,21 @@ fn midpoint_segments(
             let diff = if pu > pv { pu - pv } else { pv - pu };
             let arc = diff.min(rlen - diff);
             if arc <= HOP_THRESHOLD {
+                return true;
+            }
+        }
+        // Too-short edge filter: square endcap corners produce narrow
+        // triangles whose cross-edges are shorter than the per-point
+        // threshold provided by the caller, causing "snake tongue"
+        // artifacts. Use the minimum of both endpoints (conservative).
+        if has_len_filter {
+            let local_min = min_edge_lengths[e.0].min(min_edge_lengths[e.1]);
+            let local_min_sq = local_min * local_min;
+            let (ax, ay) = all_pts[e.0];
+            let (bx, by) = all_pts[e.1];
+            let dx = bx - ax;
+            let dy = by - ay;
+            if dx * dx + dy * dy < local_min_sq {
                 return true;
             }
         }
