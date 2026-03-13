@@ -165,6 +165,111 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
     result
 }
 
+/// Spatial index of original curve segments with interpolated buffer widths.
+///
+/// Used to look up the local buffer width at any point on the inflated polygon
+/// boundary, for per-point minimum-edge-length filtering in the skeleton step.
+struct WidthIndex {
+    cell_size: f64,
+    grid: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    /// (x0, y0, w0, x1, y1, w1) per segment
+    segments: Vec<(f64, f64, f64, f64, f64, f64)>,
+}
+
+impl WidthIndex {
+    /// Build from decimated curves and their per-vertex widths.
+    fn new(
+        curves: &[Vec<Pt>],
+        buffer_distance: f64,
+        per_curve_widths: Option<&[Vec<f64>]>,
+    ) -> Self {
+        let cell_size = 4.0 * buffer_distance;
+        let inv = 1.0 / cell_size;
+        let mut segments = Vec::new();
+        let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+            std::collections::HashMap::new();
+
+        for (ci, curve) in curves.iter().enumerate() {
+            if curve.len() < 2 {
+                continue;
+            }
+            let widths: Option<&Vec<f64>> = per_curve_widths
+                .and_then(|pcw| pcw.get(ci))
+                .filter(|w| !w.is_empty());
+
+            for i in 0..curve.len() - 1 {
+                let (x0, y0) = curve[i];
+                let (x1, y1) = curve[i + 1];
+                let w0 = widths.map_or(buffer_distance, |w| w[i]);
+                let w1 = widths.map_or(buffer_distance, |w| w[i + 1]);
+                let seg_idx = segments.len();
+                segments.push((x0, y0, w0, x1, y1, w1));
+
+                // Rasterize segment into grid cells
+                let dx = x1 - x0;
+                let dy = y1 - y0;
+                let seg_len = (dx * dx + dy * dy).sqrt();
+                let steps = ((seg_len / cell_size).ceil() as usize).max(1);
+                let mut inserted: std::collections::HashSet<(i64, i64)> =
+                    std::collections::HashSet::new();
+                for s in 0..=steps {
+                    let t = s as f64 / steps as f64;
+                    let px = x0 + t * dx;
+                    let py = y0 + t * dy;
+                    let cx = (px * inv).floor() as i64;
+                    let cy = (py * inv).floor() as i64;
+                    if inserted.insert((cx, cy)) {
+                        grid.entry((cx, cy)).or_default().push(seg_idx);
+                    }
+                }
+            }
+        }
+
+        Self {
+            cell_size,
+            grid,
+            segments,
+        }
+    }
+
+    /// Look up the local buffer width at point (px, py) by finding the
+    /// closest original curve segment and interpolating its width.
+    fn local_width_at(&self, px: f64, py: f64) -> f64 {
+        let inv = 1.0 / self.cell_size;
+        let cx = (px * inv).floor() as i64;
+        let cy = (py * inv).floor() as i64;
+        let mut best_dist_sq = f64::INFINITY;
+        let mut best_width = f64::INFINITY;
+
+        for dcx in -1..=1 {
+            for dcy in -1..=1 {
+                if let Some(bucket) = self.grid.get(&(cx + dcx, cy + dcy)) {
+                    for &si in bucket {
+                        let (x0, y0, w0, x1, y1, w1) = self.segments[si];
+                        let sdx = x1 - x0;
+                        let sdy = y1 - y0;
+                        let len_sq = sdx * sdx + sdy * sdy;
+                        let t = if len_sq < 1e-24 {
+                            0.0
+                        } else {
+                            (((px - x0) * sdx + (py - y0) * sdy) / len_sq).clamp(0.0, 1.0)
+                        };
+                        let qx = x0 + t * sdx;
+                        let qy = y0 + t * sdy;
+                        let d2 = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+                        if d2 < best_dist_sq {
+                            best_dist_sq = d2;
+                            best_width = w0 + t * (w1 - w0);
+                        }
+                    }
+                }
+            }
+        }
+
+        best_width
+    }
+}
+
 /// Spatial index of high-curvature boundary vertices.
 ///
 /// Collects turning angles from all polygon rings, keeping only vertices
@@ -480,12 +585,30 @@ fn topologize_inner(
     let snap_tol = feature_size / 20.0;
     let rdp_tol = simplification.unwrap_or(feature_size / 10.0);
 
+    // Build width index only for variable-width case
+    let width_index = per_curve_widths
+        .filter(|pcw| !pcw.is_empty())
+        .map(|pcw| WidthIndex::new(&decimated, buffer_distance, Some(pcw)));
+
     let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
     for (outer, holes) in &polygons {
         if outer.len() < 3 {
             continue;
         }
-        all_segments.extend(skeleton_cdt::skeletonize(outer, holes));
+        let min_edge_lengths: Vec<f64> = if let Some(ref idx) = width_index {
+            // Variable widths: query index per boundary point
+            outer
+                .iter()
+                .chain(holes.iter().flat_map(|h| h.iter()))
+                .map(|&(x, y)| 2.0 * idx.local_width_at(x, y))
+                .collect()
+        } else {
+            // Uniform: fill with global threshold
+            let threshold = 2.0 * buffer_distance;
+            let n = outer.len() + holes.iter().map(|h| h.len()).sum::<usize>();
+            vec![threshold; n]
+        };
+        all_segments.extend(skeleton_cdt::skeletonize(outer, holes, &min_edge_lengths));
     }
 
     if all_segments.is_empty() {
