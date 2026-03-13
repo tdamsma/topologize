@@ -590,6 +590,11 @@ fn topologize_inner(
         .filter(|pcw| !pcw.is_empty())
         .map(|pcw| WidthIndex::new(&decimated, buffer_distance, Some(pcw)));
 
+    // The skeleton threshold is 2×buffer_width (the full polygon width), but
+    // RDP simplification can narrow the polygon by up to rdp_boundary per side,
+    // so we subtract that to avoid filtering legitimate cross-edges.
+    let rdp_shrink = 2.0 * rdp_boundary;
+
     let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
     for (outer, holes) in &polygons {
         if outer.len() < 3 {
@@ -600,11 +605,11 @@ fn topologize_inner(
             outer
                 .iter()
                 .chain(holes.iter().flat_map(|h| h.iter()))
-                .map(|&(x, y)| 2.0 * idx.local_width_at(x, y))
+                .map(|&(x, y)| (2.0 * idx.local_width_at(x, y) - rdp_shrink).max(0.0))
                 .collect()
         } else {
             // Uniform: fill with global threshold
-            let threshold = 2.0 * buffer_distance;
+            let threshold = (2.0 * buffer_distance - rdp_shrink).max(0.0);
             let n = outer.len() + holes.iter().map(|h| h.len()).sum::<usize>();
             vec![threshold; n]
         };
