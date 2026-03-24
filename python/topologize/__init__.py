@@ -19,7 +19,7 @@ class TopologizeJob:
         Scale parameter for derived thresholds. Defaults to
         ``inflation_radius`` (float) or ``median(all widths)`` (list).
     simplification : float or None
-    min_tip_length : float or None
+    min_tip_fraction : float or None
     junction_merge_fraction : float or None
     """
 
@@ -27,7 +27,7 @@ class TopologizeJob:
     inflation_radius: float | list[np.ndarray]
     feature_size: float | None = None
     simplification: float | None = None
-    min_tip_length: float | None = None
+    min_tip_fraction: float | None = None
     junction_merge_fraction: float | None = None
 
 
@@ -363,7 +363,7 @@ def topologize(
     *,
     feature_size: float | None = None,
     simplification: float | None = None,
-    min_tip_length: float | None = None,
+    min_tip_fraction: float | None = None,
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
     subdivision_ratio: float | None = None,
@@ -392,9 +392,9 @@ def topologize(
         RDP (Ramer-Douglas-Peucker) tolerance applied to output polylines
         (in input units), applied after projection smoothing.
         Larger values produce fewer output points; 0.0 disables.
-    min_tip_length : float or None, default None (= feature_size * 2)
-        Terminal chains shorter than this are pruned before chain extraction.
-        Set to 0.0 to disable pruning.
+    min_tip_fraction : float or None, default None (= 2.0)
+        Terminal chains shorter than ``min_tip_fraction * feature_size`` are
+        pruned before chain extraction. Set to 0.0 to disable pruning.
     junction_merge_fraction : float or None, default None (= 1.5)
         Contract short edges between junction nodes (degree >= 3) at crossings.
         Threshold = fraction x feature_size. Merges 70-90 deg crossings with
@@ -431,8 +431,8 @@ def topologize(
     kwargs = {}
     if simplification is not None:
         kwargs["simplification"] = float(simplification)
-    if min_tip_length is not None:
-        kwargs["min_tip_length"] = float(min_tip_length)
+    if min_tip_fraction is not None:
+        kwargs["min_tip_fraction"] = float(min_tip_fraction)
     if junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = float(junction_merge_fraction)
     if pcw is not None:
@@ -533,7 +533,7 @@ def topologize_batch(
             bd,
             fs,
             job.simplification,
-            job.min_tip_length,
+            job.min_tip_fraction,
             job.junction_merge_fraction,
         ))
     raw_results = _batch(packed)

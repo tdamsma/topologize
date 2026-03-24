@@ -87,7 +87,7 @@ def test_batch_per_job_params():
     curve_sets = make_curve_sets()
     jobs = [
         TopologizeJob(curve_sets[0], 0.5, simplification=0.0),
-        TopologizeJob(curve_sets[1], 0.5, min_tip_length=0.0),
+        TopologizeJob(curve_sets[1], 0.5, min_tip_fraction=0.0),
         TopologizeJob(curve_sets[2], 0.5, junction_merge_fraction=0.0),
     ]
     batch_results = topologize_batch(jobs)
@@ -97,7 +97,7 @@ def test_batch_per_job_params():
             job.curves,
             inflation_radius=job.inflation_radius,
             simplification=job.simplification,
-            min_tip_length=job.min_tip_length,
+            min_tip_fraction=job.min_tip_fraction,
             junction_merge_fraction=job.junction_merge_fraction,
         )
         assert len(br.chains) == len(sr.chains)

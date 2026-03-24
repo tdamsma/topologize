@@ -154,9 +154,9 @@ def test_merging_at_larger_buffer():
         np.array([[0.0, 10.3], [10.0, 10.3]]),
     ]
     result_small = topologize(curves, inflation_radius=0.5)
-    # Disable tip pruning for large buffer: default min_tip_length = 12.0 would
+    # Disable tip pruning for large buffer: default min_tip_fraction = 2.0 would
     # prune the entire H-shape (all arms are ~5–10 units, below the threshold).
-    result_large = topologize(curves, inflation_radius=6.0, min_tip_length=0.0)
+    result_large = topologize(curves, inflation_radius=6.0, min_tip_fraction=0.0)
 
     chains_small = result_small.chains
     chains_large = result_large.chains

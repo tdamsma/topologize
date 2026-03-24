@@ -76,7 +76,7 @@ result = topologize([curve_a, curve_b], inflation_radius=[widths_a, widths_b])
 | `inflation_radius` | `float \| list` | Inflation radius. A single float for uniform width, or a list of per-vertex radius arrays for variable width. |
 | `feature_size` | `float \| None` | Scale parameter for all derived thresholds. Defaults to `inflation_radius` (float) or `median(all widths)` (list). |
 | `simplification` | `float \| None` | RDP tolerance on output chains (default: `feature_size / 10`). Set to `0` to disable. |
-| `min_tip_length` | `float \| None` | Prune terminal chains shorter than this (default: `feature_size * 2`). Set to `0` to disable. |
+| `min_tip_fraction` | `float \| None` | Prune terminal chains shorter than `fraction × feature_size` (default: `2.0`). Set to `0` to disable. |
 | `junction_merge_fraction` | `float \| None` | Merge nearby junctions within `fraction × feature_size` (default: `1.5`). Set to `0` to disable. |
 | `compute_widths` | `bool` | If `True`, populate `result.chain_widths` with estimated contour width at each chain point. |
 

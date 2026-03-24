@@ -552,7 +552,7 @@ fn topologize_inner(
     buffer_distance: f64,
     feature_size: f64,
     simplification: Option<f64>,
-    min_tip_length: Option<f64>,
+    min_tip_fraction: Option<f64>,
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<&[Vec<f64>]>,
     compute_widths: bool,
@@ -622,7 +622,7 @@ fn topologize_inner(
     };
 
     let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
-    let tip_len = min_tip_length.unwrap_or(feature_size * 2.0);
+    let tip_len = min_tip_fraction.unwrap_or(2.0) * feature_size;
     let graph = if tip_len > 0.0 {
         graph::prune_short_tips(&raw_graph, tip_len)
     } else {
@@ -701,26 +701,26 @@ fn topologize_inner(
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_length=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_fraction=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     feature_size: f64,
     simplification: Option<f64>,
-    min_tip_length: Option<f64>,
+    min_tip_fraction: Option<f64>,
     junction_merge_fraction: Option<f64>,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_length, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio)))
+    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_fraction, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio)))
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
 ///
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
-/// simplification, min_tip_length, junction_merge_fraction) — one
+/// simplification, min_tip_fraction, junction_merge_fraction) — one
 /// independent topologize invocation with its own parameters.
 /// The GIL is released for the duration of the parallel work.
 ///
