@@ -261,7 +261,7 @@
    ],
    "params": {
     "inflation_radius": 7.199999999999999,
-    "min_tip_length": 8.0,
+    "min_tip_fraction": 2.22,
     "simplification": 0.4
    }
   },
@@ -521,7 +521,7 @@
    ],
    "params": {
     "inflation_radius": 7.199999999999999,
-    "min_tip_length": 8.0,
+    "min_tip_fraction": 2.22,
     "simplification": 0.4
    }
   },
@@ -835,7 +835,7 @@
    ],
    "params": {
     "inflation_radius": 7.199999999999999,
-    "min_tip_length": 8.0,
+    "min_tip_fraction": 2.22,
     "simplification": 0.4
    }
   },
@@ -1161,7 +1161,7 @@
    ],
    "params": {
     "inflation_radius": 7.199999999999999,
-    "min_tip_length": 8.0,
+    "min_tip_fraction": 2.22,
     "simplification": 0.4
    }
   },
@@ -1495,7 +1495,7 @@
    ],
    "params": {
     "inflation_radius": 7.199999999999999,
-    "min_tip_length": 8.0,
+    "min_tip_fraction": 2.22,
     "simplification": 0.4
    }
   }

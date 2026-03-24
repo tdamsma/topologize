@@ -80,7 +80,7 @@ for col_idx, (label, kwargs) in enumerate(settings):
         r = topologize(
             curves,
             inflation_radius=bd,
-            min_tip_length=p["min_tip_length"],
+            min_tip_fraction=p["min_tip_fraction"],
             simplification=p["simplification"],
             **kwargs,
         )
@@ -132,7 +132,7 @@ for label, kwargs in settings:
         r = topologize(
             curves,
             inflation_radius=bd,
-            min_tip_length=p["min_tip_length"],
+            min_tip_fraction=p["min_tip_fraction"],
             simplification=p["simplification"],
             **kwargs,
         )
