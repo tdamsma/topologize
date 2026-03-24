@@ -720,7 +720,7 @@ pub fn topologize(
 /// Process multiple independent curve-sets in parallel using Rayon.
 ///
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
-/// simplification, min_tip_fraction, junction_merge_fraction) — one
+/// feature_size, simplification, min_tip_fraction, junction_merge_fraction) — one
 /// independent topologize invocation with its own parameters.
 /// The GIL is released for the duration of the parallel work.
 ///
