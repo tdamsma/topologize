@@ -21,6 +21,8 @@ class TopologizeJob:
     simplification : float or None
     min_tip_fraction : float or None
     junction_merge_fraction : float or None
+    max_nodes : int or None
+        Abort if the skeleton graph exceeds this many nodes.
     """
 
     curves: list[np.ndarray]
@@ -450,7 +452,10 @@ def topologize(
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
     if max_nodes is not None:
-        kwargs["max_nodes"] = int(max_nodes)
+        max_nodes = int(max_nodes)
+        if max_nodes <= 0:
+            raise ValueError(f"max_nodes must be a positive integer, got {max_nodes}")
+        kwargs["max_nodes"] = max_nodes
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)

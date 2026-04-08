@@ -761,8 +761,10 @@ pub fn topologize_batch(
     }
     py.detach(|| {
         jobs.par_iter()
-            .map(|(curves, bd, fs, simp, tip, jmf, max_n)| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n)?;
+            .enumerate()
+            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n))| {
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n)
+                    .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
                 Ok((chains, nodes, ids))
             })
             .collect::<Result<Vec<_>, String>>()
