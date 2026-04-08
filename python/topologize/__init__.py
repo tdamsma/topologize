@@ -29,6 +29,7 @@ class TopologizeJob:
     simplification: float | None = None
     min_tip_fraction: float | None = None
     junction_merge_fraction: float | None = None
+    max_nodes: int | None = None
 
 
 @dataclass
@@ -367,6 +368,7 @@ def topologize(
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
     subdivision_ratio: float | None = None,
+    max_nodes: int | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -413,6 +415,10 @@ def topologize(
         ``3 * inflation_radius`` to zero at ``4 * inflation_radius`` from the
         high-curvature vertex. Set to 0 to skip curvature-adaptive refinement
         entirely.
+    max_nodes : int or None, default None
+        If set, abort with a ``ValueError`` when the internal skeleton graph
+        exceeds this many nodes. Prevents unbounded memory consumption from
+        degenerate inputs (e.g. very small ``feature_size``).
 
     Returns
     -------
@@ -443,6 +449,8 @@ def topologize(
         kwargs["compute_widths"] = True
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
+    if max_nodes is not None:
+        kwargs["max_nodes"] = int(max_nodes)
 
     raw = _topologize(_convert_curves(curves_xy), bd, fs, **kwargs)
     return _unpack_result_with_widths(*raw, compute_widths=compute_widths)
@@ -535,6 +543,7 @@ def topologize_batch(
             job.simplification,
             job.min_tip_fraction,
             job.junction_merge_fraction,
+            job.max_nodes,
         ))
     raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]
