@@ -1,7 +1,5 @@
 """Tests for input validation: feature_size and max_nodes guards."""
 
-import math
-
 import numpy as np
 import pytest
 from topologize import inflate, topologize, topologize_batch, triangulate, TopologizeJob
