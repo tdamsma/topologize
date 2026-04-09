@@ -1,10 +1,20 @@
 //! Python-facing bindings. No pure algorithm logic here.
 
 use pyo3::prelude::*;
+use pyo3::exceptions::PyValueError;
 
 use crate::{graph, inflate, skeleton_cdt};
 
 type Pt = (f64, f64);
+
+fn validate_feature_size(feature_size: f64) -> PyResult<()> {
+    if feature_size <= 0.0 || !feature_size.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "feature_size must be a positive finite number, got {feature_size}"
+        )));
+    }
+    Ok(())
+}
 
 /// Decimate a polyline: drop intermediate points closer than `min_step` to
 /// the previous kept point. First and last points are always preserved.
@@ -494,7 +504,8 @@ pub fn triangulate_curves(
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     subdivision_ratio: Option<f64>,
-) -> Vec<(Pt, Pt, Pt)> {
+) -> PyResult<Vec<(Pt, Pt, Pt)>> {
+    validate_feature_size(feature_size)?;
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size);
@@ -506,7 +517,7 @@ pub fn triangulate_curves(
             out.extend(skeleton_cdt::get_triangles(&outer, &holes));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Inflate a list of polylines by `buffer_distance`, union all results,
@@ -537,13 +548,14 @@ pub fn inflate_curves(
     buffer_distance: f64,
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
-) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
+) -> PyResult<Vec<(Vec<Pt>, Vec<Vec<Pt>>)>> {
+    validate_feature_size(feature_size)?;
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size)
+    Ok(inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size))
 }
 
 /// Core topologize logic, callable from both single and batch entry points.
@@ -557,7 +569,8 @@ fn topologize_inner(
     per_curve_widths: Option<&[Vec<f64>]>,
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
-) -> (Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>) {
+    max_nodes: Option<usize>,
+) -> Result<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>), String> {
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
@@ -604,7 +617,7 @@ fn topologize_inner(
     }
 
     if all_segments.is_empty() {
-        return (vec![], vec![], vec![], vec![]);
+        return Ok((vec![], vec![], vec![], vec![]));
     }
 
     // Collect boundary vertices only if width computation was requested.
@@ -622,6 +635,15 @@ fn topologize_inner(
     };
 
     let raw_graph = graph::segments_to_graph(&all_segments, snap_tol);
+    if let Some(limit) = max_nodes {
+        if raw_graph.nodes.len() > limit {
+            return Err(format!(
+                "skeleton has {} nodes, exceeding max_nodes limit of {}",
+                raw_graph.nodes.len(),
+                limit
+            ));
+        }
+    }
     let tip_len = min_tip_fraction.unwrap_or(2.0) * feature_size;
     let graph = if tip_len > 0.0 {
         graph::prune_short_tips(&raw_graph, tip_len)
@@ -696,12 +718,12 @@ fn topologize_inner(
         vec![]
     };
 
-    (out, nodes, chain_node_ids, chain_widths)
+    Ok((out, nodes, chain_node_ids, chain_widths))
 }
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_fraction=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_fraction=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None, max_nodes=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -713,30 +735,38 @@ pub fn topologize(
     per_curve_widths: Option<Vec<Vec<f64>>>,
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
+    max_nodes: Option<usize>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
-    Ok(py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_fraction, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio)))
+    validate_feature_size(feature_size)?;
+    py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_fraction, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio, max_nodes))
+        .map_err(PyValueError::new_err)
 }
 
 /// Process multiple independent curve-sets in parallel using Rayon.
 ///
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
-/// feature_size, simplification, min_tip_fraction, junction_merge_fraction) — one
-/// independent topologize invocation with its own parameters.
+/// feature_size, simplification, min_tip_fraction, junction_merge_fraction,
+/// max_nodes) — one independent topologize invocation with its own parameters.
 /// The GIL is released for the duration of the parallel work.
 ///
 /// Returns a list of (chains, nodes, chain_node_ids) tuples, one per job.
 #[pyfunction]
 pub fn topologize_batch(
     py: Python<'_>,
-    jobs: Vec<(Vec<Vec<Pt>>, f64, f64, Option<f64>, Option<f64>, Option<f64>)>,
+    jobs: Vec<(Vec<Vec<Pt>>, f64, f64, Option<f64>, Option<f64>, Option<f64>, Option<usize>)>,
 ) -> PyResult<Vec<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)>> {
     use rayon::prelude::*;
-    Ok(py.detach(|| {
+    for (_, _, fs, _, _, _, _) in &jobs {
+        validate_feature_size(*fs)?;
+    }
+    py.detach(|| {
         jobs.par_iter()
-            .map(|(curves, bd, fs, simp, tip, jmf)| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None);
-                (chains, nodes, ids)
+            .enumerate()
+            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n))| {
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n)
+                    .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
+                Ok((chains, nodes, ids))
             })
-            .collect()
-    }))
+            .collect::<Result<Vec<_>, String>>()
+    }).map_err(PyValueError::new_err)
 }
