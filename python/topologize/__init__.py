@@ -21,8 +21,8 @@ class TopologizeJob:
     simplification : float or None
     min_tip_fraction : float or None
     junction_merge_fraction : float or None
-    max_nodes : int or None
-        Abort if the skeleton graph exceeds this many nodes.
+    max_nodes : int, default 1_000_000
+        Abort if the skeleton graph exceeds this many nodes. None to disable.
     """
 
     curves: list[np.ndarray]
@@ -31,7 +31,7 @@ class TopologizeJob:
     simplification: float | None = None
     min_tip_fraction: float | None = None
     junction_merge_fraction: float | None = None
-    max_nodes: int | None = None
+    max_nodes: int | None = 1_000_000
 
 
 @dataclass
@@ -370,7 +370,7 @@ def topologize(
     junction_merge_fraction: float | None = None,
     compute_widths: bool = False,
     subdivision_ratio: float | None = None,
-    max_nodes: int | None = None,
+    max_nodes: int | None = 1_000_000,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -417,10 +417,10 @@ def topologize(
         ``3 * inflation_radius`` to zero at ``4 * inflation_radius`` from the
         high-curvature vertex. Set to 0 to skip curvature-adaptive refinement
         entirely.
-    max_nodes : int or None, default None
-        If set, abort with a ``ValueError`` when the internal skeleton graph
-        exceeds this many nodes. Prevents unbounded memory consumption from
-        degenerate inputs (e.g. very small ``feature_size``).
+    max_nodes : int, default 1_000_000
+        Abort with a ``ValueError`` when the internal skeleton graph exceeds
+        this many nodes. Prevents unbounded memory consumption from degenerate
+        inputs (e.g. very small ``feature_size``). Set to ``None`` to disable.
 
     Returns
     -------

@@ -48,9 +48,9 @@ def test_max_nodes_negative():
         topologize(CURVES, inflation_radius=BD, max_nodes=-1)
 
 
-def test_max_nodes_none_is_unlimited():
-    """Default max_nodes=None should not limit output."""
-    result = topologize(CURVES, inflation_radius=BD, feature_size=0.1)
+def test_max_nodes_none_disables_limit():
+    """max_nodes=None should disable the limit entirely."""
+    result = topologize(CURVES, inflation_radius=BD, feature_size=0.1, max_nodes=None)
     assert len(result.nodes) > 0
 
 
