@@ -14,22 +14,40 @@ enclose empty space.
 Uses the [Clipper2](https://github.com/ange-yaghi/clipper2) library
 (`clipper2-rust` crate) with square join and round end cap.
 
+**Input preprocessing** (before inflate): split subpaths that share an endpoint
+(degree-2 only; real junctions are preserved) are **merged** into single
+polylines, controlled by `merge_tolerance`. Contours authored as many separate
+subpaths — common in CAD/SVG exports — otherwise get a square end cap at every
+interior junction, which roughens the buffer boundary and fragments the skeleton.
+
 **Boundary preprocessing** (after inflate, before CDT):
 
-1. **RDP simplification** (ε = 0.15 × buffer): the parallel-offset boundary
-   inherits one point per input vertex on each side, easily 20k+ points.
-   The CDT skeleton can't resolve features below `buffer_distance`, so
-   near-collinear boundary points are pure triangulation overhead. RDP reduces
-   a typical boundary from ~27k to ~1k points.
+1. **RDP simplification** (ε = 0.05 × buffer, `boundary_simplification`): the
+   parallel-offset boundary inherits one point per input vertex on each side,
+   easily 20k+ points. The CDT skeleton can't resolve features below
+   `buffer_distance`, so near-collinear boundary points are pure triangulation
+   overhead. RDP also denoises the square-join micro-jank that would otherwise
+   fragment the skeleton.
 
-2. **Subdivision** (max edge = 1.5 × buffer): after RDP, some boundary edges
-   are very long (straight sections collapse to two endpoints). Long edges
-   produce elongated CDT triangles whose midpoints don't land on the true
-   centerline. Subdivision re-densifies to a maximum of 1.5 × buffer per edge,
-   keeping triangles compact without re-introducing the excess from step 1.
+2. **Densification** — one of two modes:
+   - **Subdivision** (default, max edge = 1.5 × buffer): splits long edges only,
+     re-densifying straight sections so CDT triangles stay compact.
+   - **Curvature-adaptive resample** (when `resample` is set): redistributes each
+     ring to a base arc-length spacing, tightening *smoothly* through curves
+     (down to `subdivision_ratio × buffer`). Curvature refinement is folded into
+     the resample — every sample is taken *on* the offset boundary (never on a
+     post-hoc chord), and density varies continuously. This balances CDT vertex
+     density on both sides of tightly-curved buffers, where the convex side
+     otherwise carries several times more vertices than the concave side.
 
 The net effect: CDT input is reduced from ~29k to ~14k boundary points on the
 benchmark input, cutting skeleton time from ~1 s to ~40 ms total.
+
+![Curvature-adaptive resampling](https://raw.githubusercontent.com/tdamsma/topologize/main/docs/resample_comparison.png)
+
+*Left: default subdivision over-samples the concave wall and fans triangles to
+the convex side. Right: `resample` balances the density, with every vertex on
+the offset boundary. Regenerate with `python/examples/resample_comparison.py`.*
 
 ---
 

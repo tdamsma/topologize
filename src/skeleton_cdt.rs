@@ -46,6 +46,14 @@ pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
     if all_pts.len() < 3 || contours.is_empty() {
         return vec![];
     }
+    // Match the real skeleton path: break accidental vertex-on-constraint-edge
+    // coincidences (e.g. from uniform resampling) so the `cdt` crate doesn't
+    // fail. A 1e-9 perturbation is invisible at output scale.
+    for (i, pt) in all_pts.iter_mut().enumerate() {
+        let s = i as f64;
+        pt.0 += 1e-9 * (s * 1.1_f64).sin();
+        pt.1 += 1e-9 * (s * 1.3_f64).cos();
+    }
     match cdt::triangulate_contours(&all_pts, &contours) {
         Ok(tris) => tris
             .iter()

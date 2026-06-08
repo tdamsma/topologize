@@ -38,6 +38,158 @@ fn decimate_curve(pts: &[Pt], min_step: f64) -> Vec<Pt> {
     kept
 }
 
+/// Quantize a point to an integer cell for endpoint matching.
+fn pt_key(p: Pt, inv_tol: f64) -> (i64, i64) {
+    ((p.0 * inv_tol).round() as i64, (p.1 * inv_tol).round() as i64)
+}
+
+/// Effective per-vertex widths for curve `i`: the supplied vector if present
+/// and non-empty, else a uniform fill at `buffer_distance`.
+fn curve_widths(widths: Option<&[Vec<f64>]>, i: usize, len: usize, buffer_distance: f64) -> Vec<f64> {
+    match widths.and_then(|w| w.get(i)).filter(|v| !v.is_empty()) {
+        Some(v) => v.clone(),
+        None => vec![buffer_distance; len],
+    }
+}
+
+/// Join input polylines that share endpoints into maximal chains, so the
+/// offsetter does not emit spurious square end-caps at interior junctions of a
+/// contour authored as many separate subpaths. Only degree-2 shared endpoints
+/// are merged; dead-ends (degree 1) and true junctions (degree >= 3) remain
+/// boundaries. Endpoints within `tol` are treated as coincident.
+///
+/// Per-vertex widths are carried along (and reversed with a flipped curve) so
+/// they stay aligned with points. Returns merged curves and, when `widths` is
+/// `Some`, merged widths of equal per-curve length (uniform-width curves are
+/// filled at `buffer_distance`).
+fn merge_connected(
+    curves: &[Vec<Pt>],
+    widths: Option<&[Vec<f64>]>,
+    buffer_distance: f64,
+    tol: f64,
+) -> (Vec<Vec<Pt>>, Option<Vec<Vec<f64>>>) {
+    let n = curves.len();
+    let has_w = widths.is_some();
+    let inv = if tol > 0.0 { 1.0 / tol } else { 1e9 };
+
+    // endpoint -> [(curve_idx, which_end)]; which_end: 0 = start, 1 = end.
+    let mut at: std::collections::HashMap<(i64, i64), Vec<(usize, u8)>> =
+        std::collections::HashMap::new();
+    for (i, c) in curves.iter().enumerate() {
+        if c.len() < 2 {
+            continue;
+        }
+        at.entry(pt_key(c[0], inv)).or_default().push((i, 0));
+        at.entry(pt_key(*c.last().unwrap(), inv)).or_default().push((i, 1));
+    }
+
+    // The single unused continuation at a degree-2 endpoint, if any.
+    let cont_at = |k: (i64, i64), used: &[bool]| -> Option<(usize, u8)> {
+        let v = at.get(&k)?;
+        if v.len() != 2 {
+            return None; // dead-end or real junction: do not merge through
+        }
+        let mut found = None;
+        for &(j, e) in v {
+            if !used[j] {
+                if found.is_some() {
+                    return None; // both ends unused (e.g. start curve): ambiguous
+                }
+                found = Some((j, e));
+            }
+        }
+        found
+    };
+
+    let mut used = vec![false; n];
+    let mut out_c: Vec<Vec<Pt>> = Vec::new();
+    let mut out_w: Vec<Vec<f64>> = Vec::new();
+
+    for s in 0..n {
+        if used[s] || curves[s].len() < 2 {
+            continue;
+        }
+        used[s] = true;
+        let mut chain: Vec<Pt> = curves[s].clone();
+        let mut wch: Vec<f64> = curve_widths(widths, s, curves[s].len(), buffer_distance);
+
+        // extend forward off the chain's tail
+        loop {
+            let k = pt_key(*chain.last().unwrap(), inv);
+            let (j, end) = match cont_at(k, &used) {
+                Some(x) => x,
+                None => break,
+            };
+            used[j] = true;
+            let cj = &curves[j];
+            let wj = curve_widths(widths, j, cj.len(), buffer_distance);
+            if end == 0 {
+                chain.extend_from_slice(&cj[1..]);
+                if has_w {
+                    wch.extend_from_slice(&wj[1..]);
+                }
+            } else {
+                chain.extend(cj[..cj.len() - 1].iter().rev().copied());
+                if has_w {
+                    wch.extend(wj[..wj.len() - 1].iter().rev().copied());
+                }
+            }
+        }
+        // extend backward off the chain's head
+        loop {
+            let k = pt_key(chain[0], inv);
+            let (j, end) = match cont_at(k, &used) {
+                Some(x) => x,
+                None => break,
+            };
+            used[j] = true;
+            let cj = &curves[j];
+            let wj = curve_widths(widths, j, cj.len(), buffer_distance);
+            // build a piece that ENDS at k, then prepend it before the chain.
+            let (mut piece, mut wpiece): (Vec<Pt>, Vec<f64>) = if end == 1 {
+                (cj[..cj.len() - 1].to_vec(), wj[..wj.len() - 1].to_vec())
+            } else {
+                let mut p: Vec<Pt> = cj.iter().rev().copied().collect();
+                p.pop();
+                let mut w: Vec<f64> = wj.iter().rev().copied().collect();
+                w.pop();
+                (p, w)
+            };
+            piece.extend_from_slice(&chain);
+            chain = piece;
+            if has_w {
+                wpiece.extend_from_slice(&wch);
+                wch = wpiece;
+            }
+        }
+
+        out_c.push(chain);
+        if has_w {
+            out_w.push(wch);
+        }
+    }
+
+    // keep degenerate (<2 pt) curves so nothing is silently dropped
+    for i in 0..n {
+        if !used[i] && !curves[i].is_empty() {
+            out_c.push(curves[i].clone());
+            if has_w {
+                out_w.push(curve_widths(widths, i, curves[i].len(), buffer_distance));
+            }
+        }
+    }
+
+    (out_c, if has_w { Some(out_w) } else { None })
+}
+
+/// Resolve the endpoint-merge tolerance: explicit override, else
+/// `feature_size * 0.01`. Returns 0.0 (disabled) only when explicitly set <= 0.
+fn merge_tol(merge_tolerance: Option<f64>, feature_size: f64) -> f64 {
+    merge_tolerance
+        .map(|t| t.max(0.0))
+        .unwrap_or(feature_size * 0.01)
+}
+
 /// Straighten a terminal endpoint by projecting it halfway toward the line
 /// extrapolated from the penultimate segment direction.
 /// Only call for terminal (degree-1) endpoints; junction endpoints must stay fixed.
@@ -173,6 +325,268 @@ fn subdivide_ring(pts: &[Pt], max_len: f64) -> Vec<Pt> {
         }
     }
     result
+}
+
+/// Resample an open polyline span at approximately-uniform arc-length spacing,
+/// following the actual path (not chords between endpoints). Both endpoints are
+/// always kept. Returns at least `[first, last]`.
+fn resample_span_open(span: &[Pt], target: f64) -> Vec<Pt> {
+    if span.len() < 2 {
+        return span.to_vec();
+    }
+    let mut cum = vec![0.0_f64; span.len()];
+    for i in 1..span.len() {
+        let dx = span[i].0 - span[i - 1].0;
+        let dy = span[i].1 - span[i - 1].1;
+        cum[i] = cum[i - 1] + (dx * dx + dy * dy).sqrt();
+    }
+    let total = *cum.last().unwrap();
+    if total <= 1e-12 {
+        return vec![span[0], *span.last().unwrap()];
+    }
+    let n_int = ((total / target).round() as usize).max(1);
+    let mut out = Vec::with_capacity(n_int + 1);
+    let mut j = 0usize;
+    for k in 0..=n_int {
+        let s = total * (k as f64) / (n_int as f64);
+        while j + 1 < span.len() && cum[j + 1] < s {
+            j += 1;
+        }
+        if j + 1 >= span.len() {
+            out.push(*span.last().unwrap());
+        } else {
+            let seg = cum[j + 1] - cum[j];
+            let t = if seg > 1e-12 { (s - cum[j]) / seg } else { 0.0 };
+            out.push((
+                span[j].0 + t * (span[j + 1].0 - span[j].0),
+                span[j].1 + t * (span[j + 1].1 - span[j].1),
+            ));
+        }
+    }
+    out
+}
+
+/// Indices of vertices whose turning angle exceeds `corner_angle` (radians):
+/// genuine corners that must be preserved as anchors when resampling.
+fn corner_anchors(pts: &[Pt], corner_angle: f64) -> Vec<usize> {
+    let n = pts.len();
+    let cos_thresh = corner_angle.cos();
+    let mut anchors: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let prev = pts[(i + n - 1) % n];
+        let curr = pts[i];
+        let next = pts[(i + 1) % n];
+        let d1 = (curr.0 - prev.0, curr.1 - prev.1);
+        let d2 = (next.0 - curr.0, next.1 - curr.1);
+        let l1 = (d1.0 * d1.0 + d1.1 * d1.1).sqrt();
+        let l2 = (d2.0 * d2.0 + d2.1 * d2.1).sqrt();
+        if l1 < 1e-12 || l2 < 1e-12 {
+            continue;
+        }
+        let cos_a = ((d1.0 * d2.0 + d1.1 * d2.1) / (l1 * l2)).clamp(-1.0, 1.0);
+        // turning angle > corner_angle  <=>  cos(between directions) < cos(corner_angle)
+        if cos_a < cos_thresh {
+            anchors.push(i);
+        }
+    }
+    anchors
+}
+
+/// Resample a closed ring to approximately-uniform vertex spacing while
+/// preserving genuine sharp corners. `target` is the desired arc-length
+/// spacing; vertices whose turning angle exceeds `corner_angle` (radians) are
+/// always kept as anchors, and each span between consecutive anchors is
+/// resampled uniformly along its actual path.
+///
+/// Unlike `subdivide_ring` (which only splits long edges and never thins dense
+/// stretches), this decouples CDT vertex density from the offset's accidental
+/// vertex distribution — the convex side of a tight bend no longer carries many
+/// times more vertices than the concave side.
+fn resample_ring(pts: &[Pt], target: f64, corner_angle: f64) -> Vec<Pt> {
+    let n = pts.len();
+    if n < 3 || target <= 0.0 {
+        return pts.to_vec();
+    }
+    let anchors = corner_anchors(pts, corner_angle);
+
+    // No genuine corners: resample the whole loop uniformly.
+    if anchors.is_empty() {
+        let mut span = pts.to_vec();
+        span.push(pts[0]); // close
+        let looped = resample_span_open(&span, target);
+        // drop the duplicated closing point
+        let r = looped[..looped.len() - 1].to_vec();
+        return if r.len() >= 3 { r } else { pts.to_vec() };
+    }
+
+    let mut out: Vec<Pt> = Vec::new();
+    let m = anchors.len();
+    for a in 0..m {
+        let start = anchors[a];
+        let end = anchors[(a + 1) % m];
+        let span = ring_span(pts, start, end);
+        let resampled = resample_span_open(&span, target);
+        // keep all but last; the end anchor is added as the next span's start
+        out.extend_from_slice(&resampled[..resampled.len() - 1]);
+    }
+    // Never hand a degenerate ring downstream: a CDT contour needs ≥3 vertices.
+    if out.len() >= 3 {
+        out
+    } else {
+        pts.to_vec()
+    }
+}
+
+/// Collect the run of vertices from `start` forward (cyclically) to `end`,
+/// inclusive of both. When `start == end` (the single-anchor case) this returns
+/// the *entire* ring wrapped back to the anchor, rather than a 1-point span.
+fn ring_span(pts: &[Pt], start: usize, end: usize) -> Vec<Pt> {
+    let n = pts.len();
+    let mut span: Vec<Pt> = vec![pts[start]];
+    let mut i = (start + 1) % n;
+    loop {
+        span.push(pts[i]);
+        if i == end {
+            break;
+        }
+        i = (i + 1) % n;
+    }
+    span
+}
+
+/// Local target arc-length spacing at a point, driven by the curvature index.
+///
+/// Returns `base_target` where nothing curves nearby, shrinking continuously
+/// toward `ratio_90 * buffer_distance` as nearby curvature approaches 90°.
+/// Because the spacing is a smooth function of position (no integer subdivision
+/// counts), walking a boundary in steps of this size yields a smoothly varying
+/// vertex density with no jumps between adjacent edges.
+fn local_target(
+    index: &CurvatureIndex,
+    px: f64,
+    py: f64,
+    base_target: f64,
+    buffer_distance: f64,
+    ratio_90: f64,
+) -> f64 {
+    let min_angle = 15.0_f64.to_radians();
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let inner_r = buffer_distance * 3.0;
+    let outer_r = buffer_distance * 4.0;
+    let max_angle = index.max_angle_near(px, py, inner_r, outer_r);
+    if max_angle < min_angle {
+        return base_target;
+    }
+    let clamped = max_angle.min(half_pi);
+    let t = ((clamped - min_angle) / (half_pi - min_angle)).clamp(0.0, 1.0);
+    // Smoothstep (not raw quadratic) so spacing eases in/out of curved regions
+    // instead of kinking at the endpoints — gives a gentler density gradient.
+    let smooth = t * t * (3.0 - 2.0 * t);
+    let curv_spacing = buffer_distance + smooth * (ratio_90 * buffer_distance - buffer_distance);
+    base_target.min(curv_spacing)
+}
+
+/// Resample an open span with spatially-varying spacing: at each step the local
+/// target spacing is queried from the curvature index, and the next sample is
+/// interpolated *on the original span* that far along its arc. Every emitted
+/// vertex therefore lies on the true offset boundary (never on a chord), and
+/// the spacing varies continuously rather than in discrete subdivision steps.
+/// Endpoints are always kept; a too-short tail is folded into the end anchor.
+fn adaptive_resample_span_open(
+    span: &[Pt],
+    base_target: f64,
+    index: &CurvatureIndex,
+    buffer_distance: f64,
+    ratio_90: f64,
+) -> Vec<Pt> {
+    if span.len() < 2 {
+        return span.to_vec();
+    }
+    let mut cum = vec![0.0_f64; span.len()];
+    for i in 1..span.len() {
+        let dx = span[i].0 - span[i - 1].0;
+        let dy = span[i].1 - span[i - 1].1;
+        cum[i] = cum[i - 1] + (dx * dx + dy * dy).sqrt();
+    }
+    let total = *cum.last().unwrap();
+    if total <= 1e-12 {
+        return vec![span[0], *span.last().unwrap()];
+    }
+
+    let mut out: Vec<Pt> = vec![span[0]];
+    let mut s = 0.0_f64;
+    let mut j = 0usize;
+    loop {
+        let p = *out.last().unwrap();
+        let step = local_target(index, p.0, p.1, base_target, buffer_distance, ratio_90).max(1e-6);
+        let s_next = s + step;
+        // Fold a short remaining tail into the end anchor to avoid a sliver edge.
+        if s_next >= total - 0.5 * step {
+            break;
+        }
+        while j + 1 < span.len() && cum[j + 1] < s_next {
+            j += 1;
+        }
+        let q = if j + 1 >= span.len() {
+            *span.last().unwrap()
+        } else {
+            let seg = cum[j + 1] - cum[j];
+            let t = if seg > 1e-12 { (s_next - cum[j]) / seg } else { 0.0 };
+            (
+                span[j].0 + t * (span[j + 1].0 - span[j].0),
+                span[j].1 + t * (span[j + 1].1 - span[j].1),
+            )
+        };
+        out.push(q);
+        s = s_next;
+    }
+    out.push(*span.last().unwrap());
+    out
+}
+
+/// Curvature-adaptive resample of a closed ring: same corner-anchored, per-span
+/// structure as [`resample_ring`], but each span is walked with
+/// [`adaptive_resample_span_open`] so density follows curvature smoothly while
+/// every vertex stays on the original boundary.
+fn resample_ring_adaptive(
+    pts: &[Pt],
+    base_target: f64,
+    index: &CurvatureIndex,
+    buffer_distance: f64,
+    ratio_90: f64,
+    corner_angle: f64,
+) -> Vec<Pt> {
+    let n = pts.len();
+    if n < 3 || base_target <= 0.0 {
+        return pts.to_vec();
+    }
+    let anchors = corner_anchors(pts, corner_angle);
+
+    if anchors.is_empty() {
+        let mut span = pts.to_vec();
+        span.push(pts[0]); // close
+        let looped =
+            adaptive_resample_span_open(&span, base_target, index, buffer_distance, ratio_90);
+        let r = looped[..looped.len() - 1].to_vec();
+        return if r.len() >= 3 { r } else { pts.to_vec() };
+    }
+
+    let mut out: Vec<Pt> = Vec::new();
+    let m = anchors.len();
+    for a in 0..m {
+        let start = anchors[a];
+        let end = anchors[(a + 1) % m];
+        let span = ring_span(pts, start, end);
+        let resampled =
+            adaptive_resample_span_open(&span, base_target, index, buffer_distance, ratio_90);
+        out.extend_from_slice(&resampled[..resampled.len() - 1]);
+    }
+    // Never hand a degenerate ring downstream: a CDT contour needs ≥3 vertices.
+    if out.len() >= 3 {
+        out
+    } else {
+        pts.to_vec()
+    }
 }
 
 /// Spatial index of original curve segments with interpolated buffer widths.
@@ -439,34 +853,116 @@ fn refine_ring_from_index(
 
 /// Shared boundary preprocessing: RDP simplify, baseline subdivision,
 /// then optional curvature-adaptive refinement.
+/// Default boundary-RDP tolerance as a fraction of `feature_size`. Simplifies
+/// the dense offset boundary before CDT just enough to erase square-join
+/// micro-jank without visibly pulling the triangulation off the true offset.
+const BOUNDARY_RDP_FRACTION: f64 = 0.05;
+
+/// Resolve the boundary-RDP tolerance: explicit override, else
+/// `feature_size * BOUNDARY_RDP_FRACTION`. Negative is clamped to 0 (no
+/// simplification). Used both for the pre-CDT simplification and the skeleton's
+/// cross-edge compensation, so they stay in sync.
+fn boundary_rdp_tol(boundary_simplification: Option<f64>, feature_size: f64) -> f64 {
+    boundary_simplification
+        .map(|t| t.max(0.0))
+        .unwrap_or(feature_size * BOUNDARY_RDP_FRACTION)
+}
+
 fn preprocess_boundaries(
     polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)>,
     feature_size: f64,
     buffer_distance: f64,
     subdivision_ratio: Option<f64>,
+    resample: Option<f64>,
+    boundary_simplification: Option<f64>,
 ) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
-    let rdp_boundary = feature_size * 0.15;
+    let rdp_boundary = boundary_rdp_tol(boundary_simplification, feature_size);
     let max_seg = feature_size * 1.5;
     let ratio = match subdivision_ratio {
         Some(r) if r > 0.0 => r.max(0.01),
-        Some(r) => r, // 0 or negative: disables refinement
+        Some(r) => r, // 0 or negative: disables curvature weighting
         None => 0.5,
     };
+    // Uniform-resample target spacing (absolute units). When Some(>0), each ring
+    // is redistributed to ~uniform spacing instead of merely split on long edges,
+    // so the CDT no longer inherits the offset's lopsided vertex distribution.
+    let resample_target = resample.filter(|&r| r > 0.0);
+    // Genuine corners (turning angle ≥ this) are preserved during resampling.
+    let corner_angle = 60.0_f64.to_radians();
+    let curvature_on = buffer_distance > 0.0 && ratio > 0.0;
+    // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
+    let index_min_angle = 45.0_f64.to_radians();
 
-    // Step 1: baseline subdivision of all rings.
+    // --- Adaptive-resample path -------------------------------------------
+    // Curvature refinement is folded *into* the resample rather than bolted on
+    // afterwards: we choose where to sample the (RDP-simplified) offset — wider
+    // apart on straights, closer through curves — and interpolate every sample
+    // on the boundary itself. So vertices always lie on the true offset (never
+    // on a chord added post-hoc) and density varies smoothly, not in discrete
+    // subdivide-or-not jumps.
+    if let Some(t) = resample_target {
+        // RDP-simplify first; this is the boundary every sample is taken from.
+        let post: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
+            .into_iter()
+            .map(|(outer, holes)| {
+                (
+                    rdp(&outer, rdp_boundary),
+                    holes.iter().map(|h| rdp(h, rdp_boundary)).collect(),
+                )
+            })
+            .collect();
+
+        if !curvature_on {
+            return post
+                .iter()
+                .map(|(outer, holes)| {
+                    (
+                        resample_ring(outer, t, corner_angle),
+                        holes
+                            .iter()
+                            .map(|h| resample_ring(h, t, corner_angle))
+                            .collect(),
+                    )
+                })
+                .collect();
+        }
+
+        // Step 1+2: uniform pre-sample at the base spacing (so per-vertex turning
+        // angles are meaningful), then index high-curvature vertices across *all*
+        // rings — cross-ring, so opposing channel walls get matched density.
+        let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
+        for (outer, holes) in &post {
+            curv_index.add_ring(&resample_ring(outer, t, corner_angle), index_min_angle);
+            for h in holes {
+                curv_index.add_ring(&resample_ring(h, t, corner_angle), index_min_angle);
+            }
+        }
+
+        // Step 3: resample the boundary at curvature-refined arc-length steps.
+        let adapt = |ring: &[Pt]| -> Vec<Pt> {
+            resample_ring_adaptive(ring, t, &curv_index, buffer_distance, ratio, corner_angle)
+        };
+        return post
+            .iter()
+            .map(|(outer, holes)| (adapt(outer), holes.iter().map(|h| adapt(h)).collect()))
+            .collect();
+    }
+
+    // --- Subdivide path (resample off) ------------------------------------
+    // No uniform resample requested: split long edges only, then apply the
+    // legacy post-hoc curvature refinement.
+    let prep_outer = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&rdp(ring, rdp_boundary), max_seg) };
+    let prep_hole = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(ring, max_seg) };
     let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
-            let outer = subdivide_ring(&rdp(&outer, rdp_boundary), max_seg);
-            let holes = holes.iter().map(|h| subdivide_ring(h, max_seg)).collect();
+            let outer = prep_outer(&outer);
+            let holes = holes.iter().map(|h| prep_hole(h)).collect();
             (outer, holes)
         })
         .collect();
 
-    // Step 2: curvature-adaptive refinement (skip when ratio<=0 or buffer_distance <= 0).
-    if buffer_distance > 0.0 && ratio > 0.0 {
-        // Index threshold: only store vertices with ≥45° turn (skip endcap arcs ~36°).
-        let index_min_angle = 45.0_f64.to_radians();
+    if curvature_on {
         let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
         for (outer, holes) in &base_polygons {
             curv_index.add_ring(outer, index_min_angle);
@@ -497,19 +993,28 @@ fn preprocess_boundaries(
 /// Returns a flat list of triangles across all polygons, each as
 /// ((x0,y0),(x1,y1),(x2,y2)).
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, subdivision_ratio=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, subdivision_ratio=None, resample=None, boundary_simplification=None, merge_tolerance=None))]
 pub fn triangulate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
     subdivision_ratio: Option<f64>,
+    resample: Option<f64>,
+    boundary_simplification: Option<f64>,
+    merge_tolerance: Option<f64>,
 ) -> PyResult<Vec<(Pt, Pt, Pt)>> {
     validate_feature_size(feature_size)?;
+    let mtol = merge_tol(merge_tolerance, feature_size);
+    let (curves, widths) = if mtol > 0.0 {
+        merge_connected(&curves, per_curve_widths.as_deref(), buffer_distance, mtol)
+    } else {
+        (curves, per_curve_widths)
+    };
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
-    let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size);
-    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio);
+    let polygons = inflate::inflate(&decimated, buffer_distance, widths.as_deref(), feature_size);
+    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio, resample, boundary_simplification);
 
     let mut out = Vec::new();
     for (outer, holes) in polygons {
@@ -542,20 +1047,27 @@ pub fn triangulate_curves(
 /// -------
 /// list of (outer, holes) where outer and each hole is a list of (x, y) tuples
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, per_curve_widths=None, merge_tolerance=None))]
 pub fn inflate_curves(
     curves: Vec<Vec<Pt>>,
     buffer_distance: f64,
     feature_size: f64,
     per_curve_widths: Option<Vec<Vec<f64>>>,
+    merge_tolerance: Option<f64>,
 ) -> PyResult<Vec<(Vec<Pt>, Vec<Vec<Pt>>)>> {
     validate_feature_size(feature_size)?;
+    let mtol = merge_tol(merge_tolerance, feature_size);
+    let (curves, widths) = if mtol > 0.0 {
+        merge_connected(&curves, per_curve_widths.as_deref(), buffer_distance, mtol)
+    } else {
+        (curves, per_curve_widths)
+    };
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
         .map(|c| decimate_curve(c, min_step))
         .collect();
-    Ok(inflate::inflate(&decimated, buffer_distance, per_curve_widths.as_deref(), feature_size))
+    Ok(inflate::inflate(&decimated, buffer_distance, widths.as_deref(), feature_size))
 }
 
 /// Core topologize logic, callable from both single and batch entry points.
@@ -570,7 +1082,21 @@ fn topologize_inner(
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
     max_nodes: Option<usize>,
+    resample: Option<f64>,
+    boundary_simplification: Option<f64>,
+    merge_tolerance: Option<f64>,
 ) -> Result<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>), String> {
+    // Join end-to-end subpaths first so the offset has no interior square caps
+    // at junctions of a contour authored as separate pieces.
+    let mtol = merge_tol(merge_tolerance, feature_size);
+    let (merged_curves, merged_widths) = if mtol > 0.0 {
+        merge_connected(curves, per_curve_widths, buffer_distance, mtol)
+    } else {
+        (curves.to_vec(), per_curve_widths.map(|w| w.to_vec()))
+    };
+    let curves: &[Vec<Pt>] = &merged_curves;
+    let per_curve_widths: Option<&[Vec<f64>]> = merged_widths.as_deref();
+
     let min_step = feature_size * 0.15;
     let decimated: Vec<Vec<Pt>> = curves
         .iter()
@@ -578,9 +1104,11 @@ fn topologize_inner(
         .collect();
 
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths, feature_size);
-    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio);
+    let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio, resample, boundary_simplification);
 
-    let rdp_boundary = feature_size * 0.15;
+    // Same tolerance the boundary was simplified with, so the skeleton's
+    // cross-edge compensation below tracks the actual narrowing.
+    let rdp_boundary = boundary_rdp_tol(boundary_simplification, feature_size);
 
     let snap_tol = feature_size / 20.0;
     let rdp_tol = simplification.unwrap_or(feature_size / 10.0);
@@ -723,7 +1251,7 @@ fn topologize_inner(
 
 /// Topologize a list of polylines into clean centerline chains.
 #[pyfunction]
-#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_fraction=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None, max_nodes=None))]
+#[pyo3(signature = (curves, buffer_distance, feature_size, simplification=None, min_tip_fraction=None, junction_merge_fraction=None, per_curve_widths=None, compute_widths=false, subdivision_ratio=None, max_nodes=None, resample=None, boundary_simplification=None, merge_tolerance=None))]
 pub fn topologize(
     py: Python<'_>,
     curves: Vec<Vec<Pt>>,
@@ -736,9 +1264,12 @@ pub fn topologize(
     compute_widths: bool,
     subdivision_ratio: Option<f64>,
     max_nodes: Option<usize>,
+    resample: Option<f64>,
+    boundary_simplification: Option<f64>,
+    merge_tolerance: Option<f64>,
 ) -> PyResult<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>)> {
     validate_feature_size(feature_size)?;
-    py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_fraction, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio, max_nodes))
+    py.detach(|| topologize_inner(&curves, buffer_distance, feature_size, simplification, min_tip_fraction, junction_merge_fraction, per_curve_widths.as_deref(), compute_widths, subdivision_ratio, max_nodes, resample, boundary_simplification, merge_tolerance))
         .map_err(PyValueError::new_err)
 }
 
@@ -763,10 +1294,66 @@ pub fn topologize_batch(
         jobs.par_iter()
             .enumerate()
             .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n))| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n)
+                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n, None, None, None)
                     .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
                 Ok((chains, nodes, ids))
             })
             .collect::<Result<Vec<_>, String>>()
     }).map_err(PyValueError::new_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A single corner anchor (`start == end`) must wrap the whole ring, not
+    /// collapse to one vertex — otherwise the resampled ring is empty and the
+    /// CDT silently produces no triangles (the buffer=50 "0 chains" bug).
+    #[test]
+    fn ring_span_single_anchor_wraps_full_ring() {
+        let pts = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 1.0)];
+        let span = ring_span(&pts, 1, 1); // start == end
+        assert_eq!(span.len(), pts.len() + 1, "should wrap the entire ring");
+        assert_eq!(span[0], pts[1]);
+        assert_eq!(*span.last().unwrap(), pts[1]);
+        // distinct anchors still produce the inclusive sub-run unchanged.
+        let sub = ring_span(&pts, 1, 3);
+        assert_eq!(sub, vec![pts[1], pts[2], pts[3]]);
+    }
+
+    /// Build a teardrop: a smooth half-circle (no corners) closed by a single
+    /// sharp tip, so exactly one vertex exceeds the 60° corner threshold.
+    fn teardrop() -> Vec<Pt> {
+        let r = 10.0;
+        let mut ring: Vec<Pt> = Vec::new();
+        let steps = 24;
+        for k in 0..=steps {
+            let theta = std::f64::consts::PI * (k as f64) / (steps as f64);
+            ring.push((r * theta.cos(), r * theta.sin())); // (R,0) over the top to (-R,0)
+        }
+        ring.push((0.0, -r)); // sharp tip
+        ring
+    }
+
+    #[test]
+    fn resample_ring_single_anchor_is_not_degenerate() {
+        let ring = teardrop();
+        let corner = 60.0_f64.to_radians();
+        assert_eq!(
+            corner_anchors(&ring, corner).len(),
+            1,
+            "test setup should yield exactly one corner anchor"
+        );
+        let out = resample_ring(&ring, 3.0, corner);
+        assert!(out.len() >= 3, "single-anchor ring collapsed to {} pts", out.len());
+    }
+
+    #[test]
+    fn resample_ring_adaptive_single_anchor_is_not_degenerate() {
+        let ring = teardrop();
+        let corner = 60.0_f64.to_radians();
+        let index = CurvatureIndex::new(40.0);
+        let out = resample_ring_adaptive(&ring, 3.0, &index, 10.0, 0.5, corner);
+        assert!(out.len() >= 3, "single-anchor ring collapsed to {} pts", out.len());
+    }
 }

@@ -9,3 +9,7 @@ dist/
 *.egg-info/
 .claude/
 FEATURES.md
+
+# Scratch / diagnostics (local only)
+tmp/
+.DS_Store
