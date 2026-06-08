@@ -454,13 +454,24 @@ fn ring_span(pts: &[Pt], start: usize, end: usize) -> Vec<Pt> {
     span
 }
 
+/// Radius of curvature (in buffer units) at which the adaptive resample starts
+/// tightening the spacing. Above this the boundary is treated as straight and
+/// sampled at `base_target`; below it the spacing eases down following a
+/// constant chord-error law. Set so gentle bends (radius 5–10× buffer) — not
+/// just sharp turns — pick up extra samples.
+const CURVATURE_ONSET_RADIUS_FACTOR: f64 = 10.0;
+
 /// Local target arc-length spacing at a point, driven by the curvature index.
 ///
-/// Returns `base_target` where nothing curves nearby, shrinking continuously
-/// toward `ratio_90 * buffer_distance` as nearby curvature approaches 90°.
-/// Because the spacing is a smooth function of position (no integer subdivision
-/// counts), walking a boundary in steps of this size yields a smoothly varying
-/// vertex density with no jumps between adjacent edges.
+/// The index is built by sampling the offset at `base_target` spacing, so a
+/// per-vertex turning angle θ implies a local radius of curvature
+/// `R ≈ base_target / θ`. We phrase the whole response in radius terms: spacing
+/// stays at `base_target` until `R` drops below `CURVATURE_ONSET_RADIUS_FACTOR ×
+/// buffer`, then eases down as `base_target · sqrt(R / onset)` — the constant
+/// chord-error (sagitta) law — bottoming out at the `ratio_90 × buffer` floor.
+/// Because spacing is a smooth function of position (no integer subdivision
+/// counts), walking the boundary in steps of this size yields a continuously
+/// varying vertex density with no jumps between adjacent edges.
 fn local_target(
     index: &CurvatureIndex,
     px: f64,
@@ -469,21 +480,20 @@ fn local_target(
     buffer_distance: f64,
     ratio_90: f64,
 ) -> f64 {
-    let min_angle = 15.0_f64.to_radians();
-    let half_pi = std::f64::consts::FRAC_PI_2;
     let inner_r = buffer_distance * 3.0;
     let outer_r = buffer_distance * 4.0;
-    let max_angle = index.max_angle_near(px, py, inner_r, outer_r);
-    if max_angle < min_angle {
+    let angle = index.max_angle_near(px, py, inner_r, outer_r);
+    if angle <= 1e-9 {
         return base_target;
     }
-    let clamped = max_angle.min(half_pi);
-    let t = ((clamped - min_angle) / (half_pi - min_angle)).clamp(0.0, 1.0);
-    // Smoothstep (not raw quadratic) so spacing eases in/out of curved regions
-    // instead of kinking at the endpoints — gives a gentler density gradient.
-    let smooth = t * t * (3.0 - 2.0 * t);
-    let curv_spacing = buffer_distance + smooth * (ratio_90 * buffer_distance - buffer_distance);
-    base_target.min(curv_spacing)
+    let radius = base_target / angle;
+    let onset = CURVATURE_ONSET_RADIUS_FACTOR * buffer_distance;
+    if radius >= onset {
+        return base_target;
+    }
+    let floor = ratio_90 * buffer_distance;
+    let curv_spacing = base_target * (radius / onset).sqrt();
+    curv_spacing.clamp(floor.min(base_target), base_target)
 }
 
 /// Resample an open span with spatially-varying spacing: at each step the local
@@ -928,13 +938,19 @@ fn preprocess_boundaries(
         }
 
         // Step 1+2: uniform pre-sample at the base spacing (so per-vertex turning
-        // angles are meaningful), then index high-curvature vertices across *all*
-        // rings — cross-ring, so opposing channel walls get matched density.
+        // angles are meaningful), then index curved vertices across *all* rings —
+        // cross-ring, so opposing channel walls get matched density. The angle
+        // threshold corresponds to the onset radius at this spacing
+        // (θ = t / R_onset): anything gentler than ~10× buffer is left at base.
+        let onset = CURVATURE_ONSET_RADIUS_FACTOR * buffer_distance;
+        let resample_index_min_angle = (t / onset).clamp(0.0, std::f64::consts::FRAC_PI_2);
         let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
         for (outer, holes) in &post {
-            curv_index.add_ring(&resample_ring(outer, t, corner_angle), index_min_angle);
+            let ring = resample_ring(outer, t, corner_angle);
+            curv_index.add_ring(&ring, resample_index_min_angle);
             for h in holes {
-                curv_index.add_ring(&resample_ring(h, t, corner_angle), index_min_angle);
+                let ring = resample_ring(h, t, corner_angle);
+                curv_index.add_ring(&ring, resample_index_min_angle);
             }
         }
 

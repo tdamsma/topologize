@@ -33,12 +33,16 @@ interior junction, which roughens the buffer boundary and fragments the skeleton
    - **Subdivision** (default, max edge = 1.5 × buffer): splits long edges only,
      re-densifying straight sections so CDT triangles stay compact.
    - **Curvature-adaptive resample** (when `resample` is set): redistributes each
-     ring to a base arc-length spacing, tightening *smoothly* through curves
-     (down to `subdivision_ratio × buffer`). Curvature refinement is folded into
-     the resample — every sample is taken *on* the offset boundary (never on a
-     post-hoc chord), and density varies continuously. This balances CDT vertex
-     density on both sides of tightly-curved buffers, where the convex side
-     otherwise carries several times more vertices than the concave side.
+     ring to a base arc-length spacing, tightening *smoothly* through curves.
+     Spacing follows a constant chord-error (sagitta) law, `s ∝ √R`: it stays at
+     the base spacing until the local radius of curvature drops below ~10 × buffer,
+     then eases down — so gentle bends (radius 5–10 × buffer) pick up extra
+     samples, not only sharp turns — bottoming out at `subdivision_ratio × buffer`.
+     Curvature refinement is folded into the resample — every sample is taken *on*
+     the offset boundary (never on a post-hoc chord), and density varies
+     continuously. The radius is estimated cross-ring, so opposing channel walls
+     get matched density (the convex side otherwise carries several times more
+     vertices than the concave side).
 
 The net effect: CDT input is reduced from ~29k to ~14k boundary points on the
 benchmark input, cutting skeleton time from ~1 s to ~40 ms total.

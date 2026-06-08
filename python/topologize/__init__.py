@@ -453,11 +453,14 @@ def topologize(
         long edges. This balances CDT vertex density on both sides of
         tightly-curved buffers (the convex side otherwise carries several times
         more vertices than the concave side, producing skewed fan triangles).
-        Curvature refinement is folded into the resample: spacing tightens
-        smoothly through curves (down to ``subdivision_ratio * inflation_radius``)
-        and every sample is taken *on* the offset boundary, so vertices never sit
-        on a chord. A good starting point is ``0.5``–``0.75 * inflation_radius``;
-        the result is robust across a wide range of spacings.
+        Curvature refinement is folded into the resample: spacing follows a
+        constant chord-error law, easing down as the local radius of curvature
+        drops below ~10x the inflation radius (so gentle bends densify too, not
+        only sharp turns) and bottoming out at
+        ``subdivision_ratio * inflation_radius``. Every sample is taken *on* the
+        offset boundary, so vertices never sit on a chord. A good starting point
+        is ``0.5``–``0.75 * inflation_radius``; the result is robust across a wide
+        range of spacings.
     boundary_simplification : float or None, default None (= 0.05 * feature_size)
         RDP tolerance (in input units) applied to the inflated boundary *before*
         triangulation. This denoises the offset's square-join micro-jank so the

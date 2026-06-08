@@ -101,6 +101,28 @@ def test_resample_with_holes_produces_skeleton():
         assert len(res.chains) >= 1, f"resample={spacing} produced no skeleton"
 
 
+def test_resample_densifies_gentle_bends():
+    """Gentle bends (radius 5-10x buffer), not only sharp turns, must pick up
+    extra samples. A circle of radius 70 buffered by 10 yields two gentle rings
+    (outer R=80=8x buf, hole R=60=6x buf) with no sharp corners or end caps. The
+    spacing must ease below the requested base there, without collapsing past the
+    floor. Older curvature handling only engaged near ~90 deg turns and left
+    these rings at the base spacing."""
+    a = np.linspace(0.0, 2.0 * np.pi, 400)
+    circle = np.column_stack([70.0 * np.cos(a), 70.0 * np.sin(a)])
+    circle[-1] = circle[0]
+    buf = 10.0
+    base = 8.0
+
+    tris = triangulate([circle], buf, resample=base, boundary_simplification=0.0)
+    L = _boundary_edge_lengths(tris)
+
+    # Densified below the base spacing through the gentle curvature...
+    assert np.median(L) < 0.85 * base
+    # ...but not collapsed past the floor (subdivision_ratio * buffer = 5).
+    assert np.median(L) > 0.5 * buf - 1e-6
+
+
 def test_resample_no_subdivision_quantization():
     """Density varies smoothly: boundary edges should not cluster at the discrete
     base/n values (20, 10, 6.67, ...) that the old ceil()-based subdivision
