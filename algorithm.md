@@ -69,19 +69,26 @@ et al. (1995) and widely used since.
    Uses the [`cdt`](https://crates.io/crates/cdt) crate (Formlabs sweep-line
    implementation).
 
-2. **Edge classification**: for each CDT edge, count adjacent interior
-   triangles (those returned by `triangulate_contours` are already interior-
-   only — no centroid filter needed):
+2. **Edge classification**: for each CDT edge, decide whether it is a
+   *cross-edge* (spans the polygon width — its midpoint lies on the medial
+   axis) using purely topological criteria:
    - **Boundary edge**: only 1 adjacent triangle → discard
-   - **Short edge**: length < 1.9 × `buffer_distance` → discard
-   - **Internal edge**: 2 adjacent triangles, long enough → keep
+   - **Same-side edge**: both endpoints on the same boundary ring and within 2
+     hops along it → discard (connects nearby vertices on one wall, not across)
+   - **Cross-edge**: 2 adjacent triangles, not same-side → keep
 
-3. **Skeleton segment generation**: for each triangle, examine its internal
-   edges:
-   - **2 internal edges**: connect their midpoints (one segment)
-   - **3 internal edges**: connect each midpoint to the triangle centroid
+   Edges are **not** filtered by length here. A length cut at this stage is not
+   topology-aware: it severs legitimate interior cross-edges, collapsing T/X
+   junctions and breaking the skeleton across tight bends (most visibly with
+   little or no boundary simplification, where cross-edges sit right at the
+   nominal `2 × buffer_distance` width). Short spurs are removed later, in Stage
+   3, where the graph topology is known.
+
+3. **Skeleton segment generation**: for each triangle, examine its cross-edges:
+   - **2 cross-edges**: connect their midpoints (one segment)
+   - **3 cross-edges**: connect each midpoint to the triangle centroid
      (three segments, forming a Y-junction)
-   - **0 or 1 internal edges**: skip
+   - **0 or 1 cross-edges**: skip
 
 **Post-processing** (applied to output chains):
 
@@ -111,7 +118,21 @@ Raw skeleton edges are assembled into maximal non-branching polylines.
 2. **Graph construction**: undirected adjacency list; self-loops and duplicate
    edges discarded.
 
-3. **Chain traversal**:
+3. **Prune short tips**: iteratively remove spurs whose total arc length is
+   below `min_tip_fraction × feature_size`. A "tip" is walked from a degree-1
+   node *through* degree-2 nodes (contracting them into one chain) up to the
+   first junction; only then, knowing the whole spur length, is it culled. This
+   is the only edge-culling step — it acts solely on chains attached to a
+   degree-1 node, so it can never sever an interior cross-edge. It removes the
+   square-endcap "snake tongue" spurs that the (now-removed) length filter used
+   to target, without the collateral damage of breaking junctions and bends.
+
+4. **Merge close junctions**: contract short degree≥3-to-degree≥3 bridges (below
+   `junction_merge_fraction × feature_size`) so a steep crossing rendered as two
+   adjacent T-junctions becomes one X-junction. Runs after pruning so spurs
+   don't leave behind spurious junctions.
+
+5. **Chain traversal**:
    - Start from all junction/terminal nodes (degree ≠ 2); walk along degree-2
      nodes until the next junction. Mark edges visited.
    - Second pass picks up any remaining unvisited edges (pure cycles).
