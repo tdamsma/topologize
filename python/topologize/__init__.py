@@ -23,6 +23,11 @@ class TopologizeJob:
     junction_merge_fraction : float or None
     max_nodes : int, default 1_000_000
         Abort if the skeleton graph exceeds this many nodes. None to disable.
+    subdivision_ratio : float or None
+    resample : float or None
+    boundary_simplification : float or None
+    merge_tolerance : float or None
+        Boundary-preprocessing knobs, same semantics as :func:`topologize`.
     """
 
     curves: list[np.ndarray]
@@ -32,6 +37,10 @@ class TopologizeJob:
     min_tip_fraction: float | None = None
     junction_merge_fraction: float | None = None
     max_nodes: int | None = 1_000_000
+    subdivision_ratio: float | None = None
+    resample: float | None = None
+    boundary_simplification: float | None = None
+    merge_tolerance: float | None = None
 
 
 @dataclass
@@ -77,6 +86,9 @@ class TopologizeResult:
         *,
         feature_size: float | None = None,
         show_triangulation: bool = False,
+        resample: float | None = None,
+        boundary_simplification: float | None = None,
+        merge_tolerance: float | None = None,
         title: str = "",
     ):
         """Interactive plotly visualization of the topologize result.
@@ -127,7 +139,8 @@ class TopologizeResult:
 
         # --- Input buffer boundary ---
         if curves is not None and inflation_radius is not None:
-            polys = inflate(curves, inflation_radius, feature_size=feature_size)
+            polys = inflate(curves, inflation_radius, feature_size=feature_size,
+                            merge_tolerance=merge_tolerance)
             first_buf = True
             for outer, holes in polys:
                 for ring in [outer] + holes:
@@ -144,7 +157,9 @@ class TopologizeResult:
 
         # --- CDT triangulation ---
         if show_triangulation and curves is not None and inflation_radius is not None:
-            tris = triangulate(curves, inflation_radius, feature_size=feature_size)
+            tris = triangulate(curves, inflation_radius, feature_size=feature_size,
+                               resample=resample, boundary_simplification=boundary_simplification,
+                               merge_tolerance=merge_tolerance)
             xs, ys = [], []
             for (x0, y0), (x1, y1), (x2, y2) in tris:
                 xs.extend([x0, x1, x2, x0, None])
@@ -284,6 +299,9 @@ def triangulate(
     *,
     feature_size: float | None = None,
     subdivision_ratio: float | None = None,
+    resample: float | None = None,
+    boundary_simplification: float | None = None,
+    merge_tolerance: float | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
     """
     Return the CDT triangles used internally by :func:`topologize`.
@@ -303,6 +321,16 @@ def triangulate(
         Boundary densification ratio at 90° curvature. Set to 0 to skip
         curvature-adaptive refinement entirely. See :func:`topologize` for
         full description.
+    resample : float or None, optional
+        Base arc-length spacing for curvature-adaptive resampling. When set,
+        replaces plain subdivision. See :func:`topologize` for full description.
+    boundary_simplification : float or None, optional
+        RDP tolerance applied to the offset boundary before triangulation.
+        Defaults to ``0.05 × feature_size``; ``0`` disables it. See
+        :func:`topologize`.
+    merge_tolerance : float or None, optional
+        Endpoint distance below which degree-2 input subpaths are merged before
+        offsetting. Defaults to ``0.01 × feature_size``. See :func:`topologize`.
 
     Returns
     -------
@@ -318,6 +346,12 @@ def triangulate(
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
+    if resample is not None:
+        kwargs["resample"] = float(resample)
+    if boundary_simplification is not None:
+        kwargs["boundary_simplification"] = float(boundary_simplification)
+    if merge_tolerance is not None:
+        kwargs["merge_tolerance"] = float(merge_tolerance)
 
     return _tri(_convert_curves(curves_xy), bd, fs, **kwargs)
 
@@ -327,6 +361,7 @@ def inflate(
     inflation_radius: float | list[np.ndarray],
     *,
     feature_size: float | None = None,
+    merge_tolerance: float | None = None,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """
     Inflate polylines and return the buffer polygons.
@@ -340,6 +375,11 @@ def inflate(
     feature_size : float, optional
         Scale parameter for derived thresholds. Defaults to
         ``inflation_radius`` (float) or ``median(all widths)`` (list).
+    merge_tolerance : float or None, default None (= 0.01 * feature_size)
+        Join input subpaths whose endpoints coincide within this distance into
+        single polylines before offsetting, eliminating spurious square end-caps
+        at interior junctions of a contour stored as separate pieces. Set to 0
+        to disable.
 
     Returns
     -------
@@ -355,6 +395,8 @@ def inflate(
     kwargs = {}
     if pcw is not None:
         kwargs["per_curve_widths"] = [[float(v) for v in w] for w in pcw]
+    if merge_tolerance is not None:
+        kwargs["merge_tolerance"] = float(merge_tolerance)
 
     raw = _inflate(_convert_curves(curves_xy), bd, fs, **kwargs)
     return [(np.array(outer), [np.array(h) for h in holes]) for outer, holes in raw]
@@ -371,6 +413,9 @@ def topologize(
     compute_widths: bool = False,
     subdivision_ratio: float | None = None,
     max_nodes: int | None = 1_000_000,
+    resample: float | None = None,
+    boundary_simplification: float | None = None,
+    merge_tolerance: float | None = None,
 ) -> TopologizeResult:
     """
     Clean and topologize line input via inflate-skeletonize.
@@ -421,6 +466,36 @@ def topologize(
         Abort with a ``ValueError`` when the internal skeleton graph exceeds
         this many nodes. Prevents unbounded memory consumption from degenerate
         inputs (e.g. very small ``feature_size``). Set to ``None`` to disable.
+    resample : float or None, default None
+        If set, resample each inflated boundary ring at this base arc-length
+        spacing (in input units) before triangulating, instead of only splitting
+        long edges. This balances CDT vertex density on both sides of
+        tightly-curved buffers (the convex side otherwise carries several times
+        more vertices than the concave side, producing skewed fan triangles).
+        Curvature refinement is folded into the resample: spacing follows a
+        constant chord-error law, easing down as the local radius of curvature
+        drops below ~10x the inflation radius (so gentle bends densify too, not
+        only sharp turns) and bottoming out at
+        ``subdivision_ratio * inflation_radius``. Every sample is taken *on* the
+        offset boundary, so vertices never sit on a chord. A good starting point
+        is ``0.5``–``0.75 * inflation_radius``; the result is robust across a wide
+        range of spacings.
+    boundary_simplification : float or None, default None (= 0.05 * feature_size)
+        RDP tolerance (in input units) applied to the inflated boundary *before*
+        triangulation. Purely a denoising / performance knob: it strips the
+        offset's square-join micro-jank and near-collinear runs so the CDT has
+        fewer vertices to triangulate. Smaller values make the triangulation hug
+        the smooth offset more tightly (more CDT vertices); 0.0 disables it
+        entirely and passes the boundary through unchanged. Connectivity does not
+        depend on it — skeleton culling is topology-aware (see
+        ``min_tip_fraction``), so even 0.0 keeps junctions and tight bends intact.
+    merge_tolerance : float or None, default None (= 0.01 * feature_size)
+        Join input subpaths whose endpoints coincide within this distance into
+        single polylines before offsetting. Contours authored as many separate
+        subpaths (common in CAD/SVG exports) otherwise get a square end-cap at
+        every interior junction, which roughens the buffer boundary and can
+        fragment the skeleton. Only degree-2 shared endpoints are merged; real
+        junctions (3+ subpaths) are preserved. Set to 0 to disable.
 
     Returns
     -------
@@ -451,6 +526,12 @@ def topologize(
         kwargs["compute_widths"] = True
     if subdivision_ratio is not None:
         kwargs["subdivision_ratio"] = float(subdivision_ratio)
+    if resample is not None:
+        kwargs["resample"] = float(resample)
+    if boundary_simplification is not None:
+        kwargs["boundary_simplification"] = float(boundary_simplification)
+    if merge_tolerance is not None:
+        kwargs["merge_tolerance"] = float(merge_tolerance)
     if max_nodes is not None:
         max_nodes = int(max_nodes)
         if max_nodes <= 0:
@@ -549,6 +630,10 @@ def topologize_batch(
             job.min_tip_fraction,
             job.junction_merge_fraction,
             job.max_nodes,
+            job.subdivision_ratio,
+            job.resample,
+            job.boundary_simplification,
+            job.merge_tolerance,
         ))
     raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]

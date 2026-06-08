@@ -14,22 +14,47 @@ enclose empty space.
 Uses the [Clipper2](https://github.com/ange-yaghi/clipper2) library
 (`clipper2-rust` crate) with square join and round end cap.
 
+**Input preprocessing** (before inflate): split subpaths that share an endpoint
+(degree-2 only; real junctions are preserved) are **merged** into single
+polylines, controlled by `merge_tolerance`. Contours authored as many separate
+subpaths — common in CAD/SVG exports — otherwise get a square end cap at every
+interior junction, which roughens the buffer boundary and fragments the skeleton.
+
 **Boundary preprocessing** (after inflate, before CDT):
 
-1. **RDP simplification** (ε = 0.15 × buffer): the parallel-offset boundary
-   inherits one point per input vertex on each side, easily 20k+ points.
-   The CDT skeleton can't resolve features below `buffer_distance`, so
-   near-collinear boundary points are pure triangulation overhead. RDP reduces
-   a typical boundary from ~27k to ~1k points.
+1. **RDP simplification** (ε = 0.05 × `feature_size`, `boundary_simplification`):
+   the parallel-offset boundary inherits one point per input vertex on each side,
+   easily 20k+ points. The CDT skeleton can't resolve features below
+   `feature_size`, so near-collinear boundary points are pure triangulation
+   overhead; RDP also strips the square-join micro-jank. This is a
+   denoising/performance step only — connectivity is handled by the
+   topology-aware pruning in Stage 3, so `boundary_simplification = 0` (a true
+   pass-through) still yields a connected skeleton; it just leaves more vertices
+   for the CDT.
 
-2. **Subdivision** (max edge = 1.5 × buffer): after RDP, some boundary edges
-   are very long (straight sections collapse to two endpoints). Long edges
-   produce elongated CDT triangles whose midpoints don't land on the true
-   centerline. Subdivision re-densifies to a maximum of 1.5 × buffer per edge,
-   keeping triangles compact without re-introducing the excess from step 1.
+2. **Densification** — one of two modes:
+   - **Subdivision** (default, max edge = 1.5 × buffer): splits long edges only,
+     re-densifying straight sections so CDT triangles stay compact.
+   - **Curvature-adaptive resample** (when `resample` is set): redistributes each
+     ring to a base arc-length spacing, tightening *smoothly* through curves.
+     Spacing follows a constant chord-error (sagitta) law, `s ∝ √R`: it stays at
+     the base spacing until the local radius of curvature drops below ~10 × buffer,
+     then eases down — so gentle bends (radius 5–10 × buffer) pick up extra
+     samples, not only sharp turns — bottoming out at `subdivision_ratio × buffer`.
+     Curvature refinement is folded into the resample — every sample is taken *on*
+     the offset boundary (never on a post-hoc chord), and density varies
+     continuously. The radius is estimated cross-ring, so opposing channel walls
+     get matched density (the convex side otherwise carries several times more
+     vertices than the concave side).
 
 The net effect: CDT input is reduced from ~29k to ~14k boundary points on the
 benchmark input, cutting skeleton time from ~1 s to ~40 ms total.
+
+![Curvature-adaptive resampling](https://raw.githubusercontent.com/tdamsma/topologize/main/docs/resample_comparison.png)
+
+*Left: default subdivision over-samples the concave wall and fans triangles to
+the convex side. Right: `resample` balances the density, with every vertex on
+the offset boundary. Regenerate with `python/examples/resample_comparison.py`.*
 
 ---
 
@@ -47,19 +72,26 @@ et al. (1995) and widely used since.
    Uses the [`cdt`](https://crates.io/crates/cdt) crate (Formlabs sweep-line
    implementation).
 
-2. **Edge classification**: for each CDT edge, count adjacent interior
-   triangles (those returned by `triangulate_contours` are already interior-
-   only — no centroid filter needed):
+2. **Edge classification**: for each CDT edge, decide whether it is a
+   *cross-edge* (spans the polygon width — its midpoint lies on the medial
+   axis) using purely topological criteria:
    - **Boundary edge**: only 1 adjacent triangle → discard
-   - **Short edge**: length < 1.9 × `buffer_distance` → discard
-   - **Internal edge**: 2 adjacent triangles, long enough → keep
+   - **Same-side edge**: both endpoints on the same boundary ring and within 2
+     hops along it → discard (connects nearby vertices on one wall, not across)
+   - **Cross-edge**: 2 adjacent triangles, not same-side → keep
 
-3. **Skeleton segment generation**: for each triangle, examine its internal
-   edges:
-   - **2 internal edges**: connect their midpoints (one segment)
-   - **3 internal edges**: connect each midpoint to the triangle centroid
+   Edges are **not** filtered by length here. A length cut at this stage is not
+   topology-aware: it severs legitimate interior cross-edges, collapsing T/X
+   junctions and breaking the skeleton across tight bends (most visibly with
+   little or no boundary simplification, where cross-edges sit right at the
+   nominal `2 × buffer_distance` width). Short spurs are removed later, in Stage
+   3, where the graph topology is known.
+
+3. **Skeleton segment generation**: for each triangle, examine its cross-edges:
+   - **2 cross-edges**: connect their midpoints (one segment)
+   - **3 cross-edges**: connect each midpoint to the triangle centroid
      (three segments, forming a Y-junction)
-   - **0 or 1 internal edges**: skip
+   - **0 or 1 cross-edges**: skip
 
 **Post-processing** (applied to output chains):
 
@@ -89,7 +121,21 @@ Raw skeleton edges are assembled into maximal non-branching polylines.
 2. **Graph construction**: undirected adjacency list; self-loops and duplicate
    edges discarded.
 
-3. **Chain traversal**:
+3. **Prune short tips**: iteratively remove spurs whose total arc length is
+   below `min_tip_fraction × feature_size`. A "tip" is walked from a degree-1
+   node *through* degree-2 nodes (contracting them into one chain) up to the
+   first junction; only then, knowing the whole spur length, is it culled. This
+   is the only edge-culling step — it acts solely on chains attached to a
+   degree-1 node, so it can never sever an interior cross-edge. It removes the
+   square-endcap "snake tongue" spurs that the (now-removed) length filter used
+   to target, without the collateral damage of breaking junctions and bends.
+
+4. **Merge close junctions**: contract short degree≥3-to-degree≥3 bridges (below
+   `junction_merge_fraction × feature_size`) so a steep crossing rendered as two
+   adjacent T-junctions becomes one X-junction. Runs after pruning so spurs
+   don't leave behind spurious junctions.
+
+5. **Chain traversal**:
    - Start from all junction/terminal nodes (degree ≠ 2); walk along degree-2
      nodes until the next junction. Mark edges visited.
    - Second pass picks up any remaining unvisited edges (pure cycles).
@@ -161,6 +207,9 @@ typical gap between nearby strokes.
 Increase for fewer points on straight runs; set to 0 to disable and inspect the
 smoothed-but-unsimplified skeleton.
 
-**Short-edge threshold** (internal, 1.9 × buffer): prunes skeleton branches
-from minor boundary features. Increasing it gives a smoother skeleton with
-fewer spurious branches; decreasing it retains more detail at the cost of noise.
+**`min_tip_fraction`** (default 2.0 × `feature_size`): the spur-pruning length.
+A degree-1 tip whose total arc length (walked through degree-2 nodes to the
+first junction) is below this is removed — this is the sole edge-culling step
+and acts only on chains attached to a degree-1 node, so it never severs interior
+structure. Increasing it gives a smoother skeleton with fewer spurious branches;
+decreasing it retains more detail at the cost of noise.

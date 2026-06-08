@@ -140,6 +140,9 @@ uv run python/examples/svg_centerline.py python/examples/data/topologize.svg --b
 # Variable-width per-vertex inflation
 uv run python/examples/variable_width_demo.py
 
+# Curvature-adaptive boundary resampling (regenerates docs/resample_comparison.png)
+uv run python/examples/resample_comparison.py
+
 # Parallel / batch processing benchmarks
 uv run python/examples/parallel_processing.py
 ```
@@ -165,12 +168,15 @@ python/
     getting_started.py
     svg_centerline.py
     variable_width_demo.py
+    resample_comparison.py
     compare_methods.py
     parallel_processing.py
 
 tests/
   test_topologize.py
   test_batch.py
+  test_merge.py
+  test_resample.py
 
 Cargo.toml           Rust manifest
 pyproject.toml       Python build config (maturin)

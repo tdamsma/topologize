@@ -128,10 +128,21 @@ def load_svg(path, sample_distance=5.0):
 # %%
 
 
-def plot(result, curves, inflation_radius, show_cdt=False):
+def plot(result, curves, inflation_radius, show_cdt=False, resample=None,
+         boundary_simplification=None, merge_tolerance=None, simplification=None):
     chains = result.chains
     title = f"Centerline — buf={inflation_radius}  |  {len(chains)} chains, {sum(len(c) for c in chains)} pts"
-    fig = result.plot(curves, inflation_radius, show_triangulation=show_cdt, title=title)
+    if simplification is not None:
+        title += f"  |  simpl={simplification:g}"
+    if resample is not None:
+        title += f"  |  resample={resample:g}"
+    if boundary_simplification is not None:
+        title += f"  |  bnd_simpl={boundary_simplification:g}"
+    if merge_tolerance is not None:
+        title += f"  |  merge={merge_tolerance:g}"
+    fig = result.plot(curves, inflation_radius, show_triangulation=show_cdt,
+                      resample=resample, boundary_simplification=boundary_simplification,
+                      merge_tolerance=merge_tolerance, title=title)
     fig.update_layout(
         yaxis_autorange="reversed",
         width=1200,
@@ -150,6 +161,28 @@ def main():
     parser.add_argument("svg", nargs="?", help="Path to input SVG file")
     parser.add_argument("--buffer", type=float, default=20.0, help="Inflation radius (default: 20)")
     parser.add_argument("--cdt", action="store_true", help="Overlay the CDT triangulation")
+    parser.add_argument("--simplification", type=float, default=None,
+                        help="RDP tolerance applied to the output centerline chains "
+                             "(default: 0.1*feature_size). Set 0 to disable, leaving "
+                             "the raw per-triangle skeleton vertices for debugging.")
+    parser.add_argument("--resample", type=float, default=None,
+                        help="Base boundary resample spacing (e.g. 20). Balances "
+                             "CDT vertex density on both sides of curved buffers. "
+                             "Curvature refinement is folded in: spacing tightens "
+                             "smoothly through curves and every sample lands on the "
+                             "offset. Try ~0.5-0.75*buffer. Default: off (subdivide).")
+    parser.add_argument("--boundary-simplification", type=float, default=None,
+                        help="RDP tolerance applied to the buffer boundary before "
+                             "the CDT (default: 0.05*feature_size). Denoising / "
+                             "performance knob: lower = triangulation hugs the "
+                             "smooth boundary more tightly (more CDT vertices); 0 "
+                             "disables it. Connectivity is topology-aware, so 0 "
+                             "keeps the skeleton intact.")
+    parser.add_argument("--merge-tolerance", type=float, default=None,
+                        help="Join input subpaths sharing endpoints within this "
+                             "distance before offsetting (default: 0.01*feature_size). "
+                             "Removes square end-caps at interior junctions of split "
+                             "contours. Set 0 to disable.")
     parser.add_argument("--junction-merge-fraction", type=float, default=None,
                         help="Junction merge fraction (default: 1.5; set 0 to disable)")
     args = parser.parse_args()
@@ -175,13 +208,23 @@ def main():
 
     t0 = time.perf_counter()
     kwargs = {}
+    if args.simplification is not None:
+        kwargs["simplification"] = args.simplification
     if args.junction_merge_fraction is not None:
         kwargs["junction_merge_fraction"] = args.junction_merge_fraction
+    if args.resample is not None:
+        kwargs["resample"] = args.resample
+    if args.boundary_simplification is not None:
+        kwargs["boundary_simplification"] = args.boundary_simplification
+    if args.merge_tolerance is not None:
+        kwargs["merge_tolerance"] = args.merge_tolerance
     result = topologize(curves, args.buffer, **kwargs)
     ms = (time.perf_counter() - t0) * 1000
     print(f"topologize: {len(result.chains)} chains, {sum(len(c) for c in result.chains)} pts  {ms:.0f} ms")
 
-    plot(result, curves, args.buffer, show_cdt=args.cdt)
+    plot(result, curves, args.buffer, show_cdt=args.cdt, resample=args.resample,
+         boundary_simplification=args.boundary_simplification,
+         merge_tolerance=args.merge_tolerance, simplification=args.simplification)
 
 
 # %%
