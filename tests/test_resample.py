@@ -5,7 +5,6 @@ the offset boundary* (denser through curves), so every triangulation vertex
 lands on the true offset instead of on a chord added afterwards.
 """
 import numpy as np
-import pytest
 
 from topologize import inflate, triangulate
 
@@ -13,6 +12,22 @@ from topologize import inflate, triangulate
 def _arc(cx, cy, r, a0, a1, n=80):
     a = np.linspace(a0, a1, n)
     return np.column_stack([cx + r * np.cos(a), cy + r * np.sin(a)])
+
+
+def _key(p):
+    return (round(p[0], 4), round(p[1], 4))
+
+
+def _boundary_edge_lengths(tris):
+    """Lengths of triangulation edges used by exactly one triangle (the boundary)."""
+    from collections import Counter
+
+    ec = Counter()
+    for a, b, c in tris:
+        for p, q in [(a, b), (b, c), (c, a)]:
+            ec[tuple(sorted([_key(p), _key(q)]))] += 1
+    return np.array([np.hypot(e[0][0] - e[1][0], e[0][1] - e[1][1])
+                     for e, n in ec.items() if n == 1])
 
 
 def _boundary_segments(polys):
@@ -63,14 +78,7 @@ def test_resample_denser_through_curves():
     spacing = 20.0
     tris = triangulate([curve], buf, resample=spacing, boundary_simplification=0.0)
 
-    from collections import Counter
-    key = lambda p: (round(p[0], 4), round(p[1], 4))
-    ec = Counter()
-    for a, b, c in tris:
-        for p, q in [(a, b), (b, c), (c, a)]:
-            ec[tuple(sorted([key(p), key(q)]))] += 1
-    bedges = [e for e, n in ec.items() if n == 1]
-    L = np.array([np.hypot(e[0][0] - e[1][0], e[0][1] - e[1][1]) for e in bedges])
+    L = _boundary_edge_lengths(tris)
 
     # The curved side carries edges well below the base spacing...
     assert L.min() < 0.9 * spacing
@@ -102,14 +110,7 @@ def test_resample_no_subdivision_quantization():
     spacing = 20.0
     tris = triangulate([curve], buf, resample=spacing, boundary_simplification=0.0)
 
-    from collections import Counter
-    key = lambda p: (round(p[0], 4), round(p[1], 4))
-    ec = Counter()
-    for a, b, c in tris:
-        for p, q in [(a, b), (b, c), (c, a)]:
-            ec[tuple(sorted([key(p), key(q)]))] += 1
-    L = np.array([np.hypot(e[0][0] - e[1][0], e[0][1] - e[1][1])
-                  for e, n in ec.items() if n == 1])
+    L = _boundary_edge_lengths(tris)
 
     # Almost no edges should land exactly on base/2 = 10 (the old artifact).
     near_half = int((np.abs(L - spacing / 2) < 0.2).sum())
