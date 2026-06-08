@@ -482,11 +482,13 @@ def topologize(
         range of spacings.
     boundary_simplification : float or None, default None (= 0.05 * feature_size)
         RDP tolerance (in input units) applied to the inflated boundary *before*
-        triangulation. This denoises the offset's square-join micro-jank so the
-        CDT does not fragment the skeleton; it is not meant for heavy
-        simplification. Smaller values make the triangulation hug the smooth
-        offset more tightly but risk skeleton fragmentation below ~0.02 *
-        feature_size; 0.0 disables it entirely (not recommended).
+        triangulation. Purely a denoising / performance knob: it strips the
+        offset's square-join micro-jank and near-collinear runs so the CDT has
+        fewer vertices to triangulate. Smaller values make the triangulation hug
+        the smooth offset more tightly (more CDT vertices); 0.0 disables it
+        entirely and passes the boundary through unchanged. Connectivity does not
+        depend on it — skeleton culling is topology-aware (see
+        ``min_tip_fraction``), so even 0.0 keeps junctions and tight bends intact.
     merge_tolerance : float or None, default None (= 0.01 * feature_size)
         Join input subpaths whose endpoints coincide within this distance into
         single polylines before offsetting. Contours authored as many separate

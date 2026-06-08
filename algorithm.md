@@ -22,12 +22,15 @@ interior junction, which roughens the buffer boundary and fragments the skeleton
 
 **Boundary preprocessing** (after inflate, before CDT):
 
-1. **RDP simplification** (ε = 0.05 × buffer, `boundary_simplification`): the
-   parallel-offset boundary inherits one point per input vertex on each side,
+1. **RDP simplification** (ε = 0.05 × `feature_size`, `boundary_simplification`):
+   the parallel-offset boundary inherits one point per input vertex on each side,
    easily 20k+ points. The CDT skeleton can't resolve features below
-   `buffer_distance`, so near-collinear boundary points are pure triangulation
-   overhead. RDP also denoises the square-join micro-jank that would otherwise
-   fragment the skeleton.
+   `feature_size`, so near-collinear boundary points are pure triangulation
+   overhead; RDP also strips the square-join micro-jank. This is a
+   denoising/performance step only — connectivity is handled by the
+   topology-aware pruning in Stage 3, so `boundary_simplification = 0` (a true
+   pass-through) still yields a connected skeleton; it just leaves more vertices
+   for the CDT.
 
 2. **Densification** — one of two modes:
    - **Subdivision** (default, max edge = 1.5 × buffer): splits long edges only,
@@ -204,6 +207,9 @@ typical gap between nearby strokes.
 Increase for fewer points on straight runs; set to 0 to disable and inspect the
 smoothed-but-unsimplified skeleton.
 
-**Short-edge threshold** (internal, 1.9 × buffer): prunes skeleton branches
-from minor boundary features. Increasing it gives a smoother skeleton with
-fewer spurious branches; decreasing it retains more detail at the cost of noise.
+**`min_tip_fraction`** (default 2.0 × `feature_size`): the spur-pruning length.
+A degree-1 tip whose total arc length (walked through degree-2 nodes to the
+first junction) is below this is removed — this is the sole edge-culling step
+and acts only on chains attached to a degree-1 node, so it never severs interior
+structure. Increasing it gives a smoother skeleton with fewer spurious branches;
+decreasing it retains more detail at the cost of noise.

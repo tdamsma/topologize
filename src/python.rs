@@ -16,6 +16,41 @@ fn validate_feature_size(feature_size: f64) -> PyResult<()> {
     Ok(())
 }
 
+/// Validate user-supplied per-vertex widths against their curves. A non-empty
+/// width list must carry exactly one radius per curve vertex; an empty list (or
+/// a missing trailing entry) means "use the uniform buffer for this curve". A
+/// wrong-length or out-of-range list would otherwise panic deep inside
+/// `inflate_curve_variable`'s `assert_eq!`, aborting the whole Python process —
+/// so reject it here with a normal error instead.
+fn validate_per_curve_widths(curves: &[Vec<Pt>], widths: Option<&[Vec<f64>]>) -> Result<(), String> {
+    let Some(widths) = widths else {
+        return Ok(());
+    };
+    for (i, w) in widths.iter().enumerate() {
+        if w.is_empty() {
+            continue;
+        }
+        match curves.get(i) {
+            Some(c) if c.len() == w.len() => {}
+            Some(c) => {
+                return Err(format!(
+                    "per_curve_widths[{i}] has {} entries but curve {i} has {} points; \
+                     they must match (or pass an empty list to use the uniform buffer)",
+                    w.len(),
+                    c.len()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "per_curve_widths has an entry for curve {i} but only {} curve(s) were given",
+                    curves.len()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Decimate a polyline: drop intermediate points closer than `min_step` to
 /// the previous kept point. First and last points are always preserved.
 /// Only removes points in dense regions; well-spaced points are untouched.
@@ -36,6 +71,18 @@ fn decimate_curve(pts: &[Pt], min_step: f64) -> Vec<Pt> {
     }
     kept.push(*pts.last().unwrap());
     kept
+}
+
+/// Decimate every curve, unless per-vertex widths are in play. Decimation drops
+/// points by position, but the matching `per_curve_widths` are *not* tracked
+/// through it, so decimating a variable-width curve would leave widths and
+/// points misaligned — which then panics in `inflate_curve_variable`. Variable
+/// width is the rarer path; keeping its full sampling is correct and cheap.
+fn decimate_curves(curves: &[Vec<Pt>], has_widths: bool, min_step: f64) -> Vec<Vec<Pt>> {
+    if has_widths {
+        return curves.to_vec();
+    }
+    curves.iter().map(|c| decimate_curve(c, min_step)).collect()
 }
 
 /// Quantize a point to an integer cell for endpoint matching.
@@ -769,9 +816,10 @@ fn refine_ring_from_index(
 const BOUNDARY_RDP_FRACTION: f64 = 0.05;
 
 /// Resolve the boundary-RDP tolerance: explicit override, else
-/// `feature_size * BOUNDARY_RDP_FRACTION`. Negative is clamped to 0 (no
-/// simplification). Used both for the pre-CDT simplification and the skeleton's
-/// cross-edge compensation, so they stay in sync.
+/// `feature_size * BOUNDARY_RDP_FRACTION`. Non-positive disables simplification
+/// (rings pass through unchanged). This is purely the pre-CDT boundary
+/// simplification; the old skeleton cross-edge length filter it used to feed was
+/// removed in favour of topology-aware pruning.
 fn boundary_rdp_tol(boundary_simplification: Option<f64>, feature_size: f64) -> f64 {
     boundary_simplification
         .map(|t| t.max(0.0))
@@ -932,14 +980,14 @@ pub fn triangulate_curves(
     merge_tolerance: Option<f64>,
 ) -> PyResult<Vec<(Pt, Pt, Pt)>> {
     validate_feature_size(feature_size)?;
+    validate_per_curve_widths(&curves, per_curve_widths.as_deref()).map_err(PyValueError::new_err)?;
     let mtol = merge_tol(merge_tolerance, feature_size);
     let (curves, widths) = if mtol > 0.0 {
         merge_connected(&curves, per_curve_widths.as_deref(), buffer_distance, mtol)
     } else {
         (curves, per_curve_widths)
     };
-    let min_step = feature_size * 0.15;
-    let decimated: Vec<Vec<Pt>> = curves.iter().map(|c| decimate_curve(c, min_step)).collect();
+    let decimated = decimate_curves(&curves, widths.is_some(), feature_size * 0.15);
     let polygons = inflate::inflate(&decimated, buffer_distance, widths.as_deref(), feature_size);
     let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio, resample, boundary_simplification);
 
@@ -983,17 +1031,14 @@ pub fn inflate_curves(
     merge_tolerance: Option<f64>,
 ) -> PyResult<Vec<(Vec<Pt>, Vec<Vec<Pt>>)>> {
     validate_feature_size(feature_size)?;
+    validate_per_curve_widths(&curves, per_curve_widths.as_deref()).map_err(PyValueError::new_err)?;
     let mtol = merge_tol(merge_tolerance, feature_size);
     let (curves, widths) = if mtol > 0.0 {
         merge_connected(&curves, per_curve_widths.as_deref(), buffer_distance, mtol)
     } else {
         (curves, per_curve_widths)
     };
-    let min_step = feature_size * 0.15;
-    let decimated: Vec<Vec<Pt>> = curves
-        .iter()
-        .map(|c| decimate_curve(c, min_step))
-        .collect();
+    let decimated = decimate_curves(&curves, widths.is_some(), feature_size * 0.15);
     Ok(inflate::inflate(&decimated, buffer_distance, widths.as_deref(), feature_size))
 }
 
@@ -1013,6 +1058,7 @@ fn topologize_inner(
     boundary_simplification: Option<f64>,
     merge_tolerance: Option<f64>,
 ) -> Result<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>, Vec<Vec<f64>>), String> {
+    validate_per_curve_widths(curves, per_curve_widths)?;
     // Join end-to-end subpaths first so the offset has no interior square caps
     // at junctions of a contour authored as separate pieces.
     let mtol = merge_tol(merge_tolerance, feature_size);
@@ -1024,11 +1070,7 @@ fn topologize_inner(
     let curves: &[Vec<Pt>] = &merged_curves;
     let per_curve_widths: Option<&[Vec<f64>]> = merged_widths.as_deref();
 
-    let min_step = feature_size * 0.15;
-    let decimated: Vec<Vec<Pt>> = curves
-        .iter()
-        .map(|c| decimate_curve(c, min_step))
-        .collect();
+    let decimated = decimate_curves(curves, per_curve_widths.is_some(), feature_size * 0.15);
 
     let polygons = inflate::inflate(&decimated, buffer_distance, per_curve_widths, feature_size);
     let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio, resample, boundary_simplification);

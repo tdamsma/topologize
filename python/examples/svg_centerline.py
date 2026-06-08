@@ -173,9 +173,11 @@ def main():
                              "offset. Try ~0.5-0.75*buffer. Default: off (subdivide).")
     parser.add_argument("--boundary-simplification", type=float, default=None,
                         help="RDP tolerance applied to the buffer boundary before "
-                             "the CDT (default: 0.05*buffer). Lower = triangulation "
-                             "hugs the smooth boundary more tightly; 0 disables it "
-                             "but fragments the skeleton (not recommended).")
+                             "the CDT (default: 0.05*feature_size). Denoising / "
+                             "performance knob: lower = triangulation hugs the "
+                             "smooth boundary more tightly (more CDT vertices); 0 "
+                             "disables it. Connectivity is topology-aware, so 0 "
+                             "keeps the skeleton intact.")
     parser.add_argument("--merge-tolerance", type=float, default=None,
                         help="Join input subpaths sharing endpoints within this "
                              "distance before offsetting (default: 0.01*feature_size). "
