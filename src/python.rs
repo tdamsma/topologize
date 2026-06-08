@@ -56,7 +56,13 @@ fn curve_widths(widths: Option<&[Vec<f64>]>, i: usize, len: usize, buffer_distan
 /// offsetter does not emit spurious square end-caps at interior junctions of a
 /// contour authored as many separate subpaths. Only degree-2 shared endpoints
 /// are merged; dead-ends (degree 1) and true junctions (degree >= 3) remain
-/// boundaries. Endpoints within `tol` are treated as coincident.
+/// boundaries. Endpoints are matched by snapping to a grid of cell size `tol`
+/// (round to nearest); two endpoints coincide when they land in the same cell.
+/// This reliably welds endpoints meant to be identical (shared vertices differ
+/// only by float noise « `tol`). It does *not* guarantee every pair within
+/// `tol` merges — two distinct endpoints straddling a cell boundary may miss —
+/// but a missed merge is benign: it just leaves the pre-merge boundary, and the
+/// default `tol` (0.01 × feature_size) is far below any real feature spacing.
 ///
 /// Per-vertex widths are carried along (and reversed with a flipped curve) so
 /// they stay aligned with points. Returns merged curves and, when `widths` is
@@ -782,6 +788,17 @@ fn preprocess_boundaries(
 ) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
     let rdp_boundary = boundary_rdp_tol(boundary_simplification, feature_size);
     let max_seg = feature_size * 1.5;
+    // Boundary simplification, applied uniformly to outer rings and holes. A
+    // non-positive tolerance is a true pass-through: `rdp` with epsilon == 0
+    // would still collapse exactly-collinear runs, which is not what callers
+    // mean by disabling simplification.
+    let simplify = |ring: &[Pt]| -> Vec<Pt> {
+        if rdp_boundary > 0.0 {
+            rdp(ring, rdp_boundary)
+        } else {
+            ring.to_vec()
+        }
+    };
     let ratio = match subdivision_ratio {
         Some(r) if r > 0.0 => r.max(0.01),
         Some(r) => r, // 0 or negative: disables curvature weighting
@@ -810,8 +827,8 @@ fn preprocess_boundaries(
             .into_iter()
             .map(|(outer, holes)| {
                 (
-                    rdp(&outer, rdp_boundary),
-                    holes.iter().map(|h| rdp(h, rdp_boundary)).collect(),
+                    simplify(&outer),
+                    holes.iter().map(|h| simplify(h)).collect(),
                 )
             })
             .collect();
@@ -861,8 +878,8 @@ fn preprocess_boundaries(
     // --- Subdivide path (resample off) ------------------------------------
     // No uniform resample requested: split long edges only, then apply the
     // legacy post-hoc curvature refinement.
-    let prep_outer = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&rdp(ring, rdp_boundary), max_seg) };
-    let prep_hole = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(ring, max_seg) };
+    let prep_outer = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&simplify(ring), max_seg) };
+    let prep_hole = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&simplify(ring), max_seg) };
     let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
         .into_iter()
         .map(|(outer, holes)| {
@@ -1174,29 +1191,48 @@ pub fn topologize(
 ///
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
 /// feature_size, simplification, min_tip_fraction, junction_merge_fraction,
-/// max_nodes) — one independent topologize invocation with its own parameters.
-/// The GIL is released for the duration of the parallel work.
+/// max_nodes, subdivision_ratio, resample, boundary_simplification,
+/// merge_tolerance) — one independent topologize invocation with its own
+/// parameters, matching the boundary-preprocessing knobs of the single
+/// [`topologize`] entry point. The GIL is released for the parallel work.
 ///
 /// Returns a list of (chains, nodes, chain_node_ids) tuples, one per job.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub fn topologize_batch(
     py: Python<'_>,
-    jobs: Vec<(Vec<Vec<Pt>>, f64, f64, Option<f64>, Option<f64>, Option<f64>, Option<usize>)>,
+    jobs: Vec<(
+        Vec<Vec<Pt>>,
+        f64,
+        f64,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<usize>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    )>,
 ) -> PyResult<Vec<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)>> {
     use rayon::prelude::*;
-    for (_, _, fs, _, _, _, _) in &jobs {
-        validate_feature_size(*fs)?;
+    for job in &jobs {
+        validate_feature_size(job.2)?;
     }
     py.detach(|| {
         jobs.par_iter()
             .enumerate()
-            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n))| {
-                let (chains, nodes, ids, _) = topologize_inner(curves, *bd, *fs, *simp, *tip, *jmf, None, false, None, *max_n, None, None, None)
-                    .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
+            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n, sub, resample, bsimp, mtol))| {
+                let (chains, nodes, ids, _) = topologize_inner(
+                    curves, *bd, *fs, *simp, *tip, *jmf, None, false, *sub, *max_n, *resample,
+                    *bsimp, *mtol,
+                )
+                .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
                 Ok((chains, nodes, ids))
             })
             .collect::<Result<Vec<_>, String>>()
-    }).map_err(PyValueError::new_err)
+    })
+    .map_err(PyValueError::new_err)
 }
 
 #[cfg(test)]

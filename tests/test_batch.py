@@ -104,3 +104,44 @@ def test_batch_per_job_params():
         assert br.nodes.shape == sr.nodes.shape
         for bc, sc in zip(br.chains, sr.chains):
             np.testing.assert_allclose(bc, sc)
+
+
+def test_batch_boundary_preprocessing_params():
+    """Batch jobs must honor subdivision_ratio / resample /
+    boundary_simplification / merge_tolerance, matching the single-call path."""
+    # A bent stroke whose boundary preprocessing meaningfully changes vertex
+    # distribution (and therefore the smoothed chain points).
+    bend = np.array([[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]])
+    bd = 10.0
+    job = TopologizeJob(
+        [bend],
+        bd,
+        resample=5.0,
+        boundary_simplification=0.0,
+        merge_tolerance=0.0,
+        subdivision_ratio=0.25,
+    )
+    (br,) = topologize_batch([job])
+
+    # 1) Parity: batch result equals the single call with the same params.
+    sr = topologize(
+        [bend],
+        inflation_radius=bd,
+        resample=5.0,
+        boundary_simplification=0.0,
+        merge_tolerance=0.0,
+        subdivision_ratio=0.25,
+    )
+    assert len(br.chains) == len(sr.chains)
+    for bc, sc in zip(br.chains, sr.chains):
+        np.testing.assert_allclose(bc, sc)
+
+    # 2) The params are actually applied: output differs from the default path.
+    default = topologize([bend], inflation_radius=bd)
+    same_shape = len(br.chains) == len(default.chains) and all(
+        b.shape == d.shape for b, d in zip(br.chains, default.chains)
+    )
+    differs = not same_shape or any(
+        not np.allclose(b, d) for b, d in zip(br.chains, default.chains)
+    )
+    assert differs, "boundary-preprocessing params had no effect in batch"

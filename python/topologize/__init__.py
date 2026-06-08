@@ -23,6 +23,11 @@ class TopologizeJob:
     junction_merge_fraction : float or None
     max_nodes : int, default 1_000_000
         Abort if the skeleton graph exceeds this many nodes. None to disable.
+    subdivision_ratio : float or None
+    resample : float or None
+    boundary_simplification : float or None
+    merge_tolerance : float or None
+        Boundary-preprocessing knobs, same semantics as :func:`topologize`.
     """
 
     curves: list[np.ndarray]
@@ -32,6 +37,10 @@ class TopologizeJob:
     min_tip_fraction: float | None = None
     junction_merge_fraction: float | None = None
     max_nodes: int | None = 1_000_000
+    subdivision_ratio: float | None = None
+    resample: float | None = None
+    boundary_simplification: float | None = None
+    merge_tolerance: float | None = None
 
 
 @dataclass
@@ -312,6 +321,16 @@ def triangulate(
         Boundary densification ratio at 90° curvature. Set to 0 to skip
         curvature-adaptive refinement entirely. See :func:`topologize` for
         full description.
+    resample : float or None, optional
+        Base arc-length spacing for curvature-adaptive resampling. When set,
+        replaces plain subdivision. See :func:`topologize` for full description.
+    boundary_simplification : float or None, optional
+        RDP tolerance applied to the offset boundary before triangulation.
+        Defaults to ``0.05 × feature_size``; ``0`` disables it. See
+        :func:`topologize`.
+    merge_tolerance : float or None, optional
+        Endpoint distance below which degree-2 input subpaths are merged before
+        offsetting. Defaults to ``0.01 × feature_size``. See :func:`topologize`.
 
     Returns
     -------
@@ -609,6 +628,10 @@ def topologize_batch(
             job.min_tip_fraction,
             job.junction_merge_fraction,
             job.max_nodes,
+            job.subdivision_ratio,
+            job.resample,
+            job.boundary_simplification,
+            job.merge_tolerance,
         ))
     raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]
