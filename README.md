@@ -2,7 +2,7 @@
 
 **Convert messy, overlapping polylines into a clean topological skeleton.**
 
-Given a set of curves — open or closed, possibly intersecting or bundled — `topologize` inflates them into a region, skeletonizes that region via constrained Delaunay triangulation, and returns a list of maximal non-branching polylines tracing the medial axis.
+Given a set of curves — open or closed, possibly intersecting or bundled — `topologize` inflates them into a region, skeletonizes that region via constrained Delaunay triangulation, and returns an approximate centerline as maximal non-branching polylines.
 
 ![Before and after on topologize.svg](https://raw.githubusercontent.com/tdamsma/topologize/main/docs/example_topologize.png)
 
@@ -32,14 +32,20 @@ Concrete examples:
 pip install topologize
 ```
 
-Runtime dependency: `numpy` only.
+Requires **Python 3.12 or newer**. Runtime dependency: `numpy` only.
+
+For the optional visualization method:
+
+```bash
+pip install topologize plotly
+```
 
 To build from source (requires a Rust toolchain):
 
 ```bash
 git clone https://github.com/tdamsma/topologize
 cd topologize
-uv run maturin develop --release
+uv run --with maturin maturin develop --release
 ```
 
 ## Quick start
@@ -60,7 +66,7 @@ result.nodes           # (K, 2) array of unique junction/endpoint positions
 result.chain_node_ids  # list of (start_id, end_id) per chain
 ```
 
-`inflation_radius` is the main tuning parameter. Use roughly **half the typical gap between nearby strokes** — small enough to keep distinct paths separate, large enough to merge strokes that belong together.
+`inflation_radius` is the main tuning parameter. To merge strokes separated by a gap `g`, start with a radius slightly above `g / 2`. To keep distinct strokes separate, keep the radius below half their separation. All coordinates, radii, and absolute tolerances use the same units.
 
 For variable-width inflation, pass a list of per-vertex radius arrays:
 
@@ -78,7 +84,25 @@ result = topologize([curve_a, curve_b], inflation_radius=[widths_a, widths_b])
 | `simplification` | `float \| None` | RDP tolerance on output chains (default: `feature_size / 10`). Set to `0` to disable. |
 | `min_tip_fraction` | `float \| None` | Prune terminal chains shorter than `fraction × feature_size` (default: `2.0`). Set to `0` to disable. |
 | `junction_merge_fraction` | `float \| None` | Merge nearby junctions within `fraction × feature_size` (default: `1.5`). Set to `0` to disable. |
-| `compute_widths` | `bool` | If `True`, populate `result.chain_widths` with estimated contour width at each chain point. |
+| `compute_widths` | `bool` | Default `False`. Estimate width as twice the distance to the nearest inflated boundary vertex; this depends on boundary sampling. |
+| `subdivision_ratio` | `float \| None` | Curvature refinement ratio (default `0.5`). Set to `0` to disable curvature refinement; baseline subdivision still applies. |
+| `resample` | `float \| None` | Optional curvature-adaptive boundary spacing in input units. Start with `0.5`–`0.75 × inflation_radius` for a uniform radius. |
+| `boundary_simplification` | `float \| None` | Boundary RDP tolerance before CDT (default `0.05 × feature_size`). Set to `0` for a pass-through. |
+| `merge_tolerance` | `float \| None` | Match degree-2 subpath endpoints by a grid with this cell size (default `0.01 × feature_size`). Set to `0` to disable. Points within this distance can fall in different cells. |
+| `max_nodes` | `int \| None` | Raise `ValueError` if the allocated skeleton graph exceeds this node count (default `1_000_000`). `None` disables the check. It does not bound earlier preprocessing or triangulation allocations. |
+
+### Geometry and tuning limits
+
+The centerline approximates the medial axis. Boundary sampling, endpoint snapping,
+Taubin smoothing, tip pruning, and junction contraction can change geometry or
+remove small features. Clipper2 coordinates are quantized to six decimal places,
+so choose units that keep important features above that precision.
+
+Set `min_tip_fraction=0` to preserve short terminal chains and
+`junction_merge_fraction=0` to preserve nearby junctions. `simplification=0`
+disables output RDP simplification; smoothing still applies. Use
+`compute_widths=True` for approximate widths, allowing for the cost of scanning
+boundary vertices for every output point.
 
 ### Visualization
 
@@ -149,7 +173,7 @@ uv run python/examples/parallel_processing.py
 
 ## Algorithm
 
-See [algorithm.md](algorithm.md) for a detailed description of all three pipeline stages, the boundary preprocessing steps (RDP simplification + subdivision), the post-processing applied to output chains (projection smoothing, endpoint straightening, RDP), and the rationale for the CDT midpoint approach over alternatives (Voronoi, Python prototype).
+See [algorithm.md](algorithm.md) for a detailed description of all three pipeline stages, the boundary preprocessing steps (RDP simplification + subdivision), the post-processing applied to output chains (Taubin smoothing, endpoint straightening, RDP), and the rationale for the CDT midpoint approach over alternatives (Voronoi, Python prototype).
 
 ## Project structure
 
@@ -177,7 +201,23 @@ tests/
   test_batch.py
   test_merge.py
   test_resample.py
+  test_junctions.py
+  test_validation.py
 
 Cargo.toml           Rust manifest
 pyproject.toml       Python build config (maturin)
 ```
+
+
+## Development checks
+
+```bash
+uv sync --group dev
+uv run --with maturin maturin develop --release
+uv run pytest tests/
+cargo test
+```
+
+CI builds and tests Linux x86-64 wheels on Python 3.12, 3.13, and 3.14.
+Release builds also produce wheels for macOS, Windows, and other Linux targets;
+those additional targets do not currently run the test suite in CI.
