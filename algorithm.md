@@ -12,7 +12,7 @@ are then unioned into a single region, which may have holes if input curves
 enclose empty space.
 
 Uses the [Clipper2](https://github.com/ange-yaghi/clipper2) library
-(`clipper2-rust` crate) with square join and round end cap.
+(`clipper2-rust` crate) with square joins and square end caps.
 
 **Input preprocessing** (before inflate): split subpaths that share an endpoint
 (degree-2 only; real junctions are preserved) are **merged** into single
@@ -33,7 +33,7 @@ interior junction, which roughens the buffer boundary and fragments the skeleton
    for the CDT.
 
 2. **Densification** — one of two modes:
-   - **Subdivision** (default, max edge = 1.5 × buffer): splits long edges only,
+   - **Subdivision** (default, max edge = 1.5 × `feature_size`): splits long edges only,
      re-densifying straight sections so CDT triangles stay compact.
    - **Curvature-adaptive resample** (when `resample` is set): redistributes each
      ring to a base arc-length spacing, tightening *smoothly* through curves.
@@ -95,17 +95,17 @@ et al. (1995) and widely used since.
 
 **Post-processing** (applied to output chains):
 
-1. **3× projection smoothing**: each interior point moves halfway toward its
-   projection on the line through its two neighbours. This cancels the
-   left-right staircase artifact from alternating CDT triangle orientations on
-   near-straight corridor sections.
+1. **3× Taubin smoothing**: each interior point is adjusted toward the
+   average of its two neighbours with λ = 0.5, then away with μ = −0.53.
+   The alternating passes reduce the CDT staircase artifact while limiting
+   shrinkage. Chain endpoints stay fixed during these passes.
 
 2. **Terminal endpoint straightening**: degree-1 (terminal) chain endpoints are
    projected halfway onto the extrapolated chain direction. At the tip of a
    pointed shape the last CDT midpoint is off-axis; this pulls it back.
    Junction endpoints are left fixed to preserve chain connectivity.
 
-3. **RDP simplification** (ε = buffer / 10 by default): removes redundant
+3. **RDP simplification** (ε = `feature_size` / 10 by default): removes redundant
    points on near-straight runs after smoothing.
 
 ---
@@ -115,7 +115,7 @@ et al. (1995) and widely used since.
 Raw skeleton edges are assembled into maximal non-branching polylines.
 
 1. **Endpoint snapping**: nearby endpoints are merged with a grid-cell hash map
-   at tolerance `snap_tol = buffer_distance / 20`. Closes small gaps from
+   at tolerance `snap_tol = feature_size / 20`. Closes small gaps from
    floating-point rounding across adjacent triangles.
 
 2. **Graph construction**: undirected adjacency list; self-loops and duplicate
