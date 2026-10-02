@@ -23,12 +23,12 @@ type Segment = (Pt, Pt);
 /// the skeleton across tight bends). Short spurs are removed downstream by the
 /// graph-level `prune_short_tips`, which only culls chains attached to a
 /// degree-1 node.
-pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
+pub fn skeletonize(outer: &[Pt], holes: &[Vec<Pt>]) -> Result<Vec<Segment>, String> {
     midpoint_segments(outer, holes)
 }
 
 /// Return the raw CDT triangles as vertex triples, for debugging/visualisation.
-pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
+pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Result<Vec<(Pt, Pt, Pt)>, String> {
     let mut all_pts: Vec<Pt> = Vec::new();
     let mut contours: Vec<Vec<usize>> = Vec::new();
     for ring in std::iter::once(outer).chain(holes.iter().map(|h| h.as_slice())) {
@@ -43,26 +43,16 @@ pub fn get_triangles(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<(Pt, Pt, Pt)> {
         contours.push(contour);
     }
     if all_pts.len() < 3 || contours.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
-    // Match the real skeleton path: break accidental vertex-on-constraint-edge
-    // coincidences (e.g. from uniform resampling) so the `cdt` crate doesn't
-    // fail. A 1e-9 perturbation is invisible at output scale.
-    for (i, pt) in all_pts.iter_mut().enumerate() {
-        let s = i as f64;
-        pt.0 += 1e-9 * (s * 1.1_f64).sin();
-        pt.1 += 1e-9 * (s * 1.3_f64).cos();
-    }
-    match cdt::triangulate_contours(&all_pts, &contours) {
-        Ok(tris) => tris
-            .iter()
-            .map(|&(a, b, c)| (all_pts[a], all_pts[b], all_pts[c]))
-            .collect(),
-        Err(_) => vec![],
-    }
+    let triangles = triangulate_points(&mut all_pts, &contours)?;
+    Ok(triangles
+        .iter()
+        .map(|&(a, b, c)| (all_pts[a], all_pts[b], all_pts[c]))
+        .collect())
 }
 
-fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
+fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Result<Vec<Segment>, String> {
     // Build flat point list and closed contours (last index == first).
     let mut all_pts: Vec<Pt> = Vec::new();
     let mut contours: Vec<Vec<usize>> = Vec::new();
@@ -80,7 +70,7 @@ fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
     }
 
     if all_pts.len() < 3 || contours.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
 
     // Build point → (ring_id, position_in_ring) mapping for topological
@@ -98,24 +88,16 @@ fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
         }
     }
 
-    // Break any accidental vertex-on-constraint-edge coincidences that arise
-    // from the subdivision step. A 1e-9 perturbation is invisible in the output.
-    for (i, pt) in all_pts.iter_mut().enumerate() {
-        let s = i as f64;
-        pt.0 += 1e-9 * (s * 1.1_f64).sin();
-        pt.1 += 1e-9 * (s * 1.3_f64).cos();
-    }
-
-    // Triangulate. `triangulate_contours` returns only interior triangles.
-    let triangles = match cdt::triangulate_contours(&all_pts, &contours) {
-        Ok(t) => t,
-        Err(_) => return vec![],
-    };
+    let triangles = triangulate_points(&mut all_pts, &contours)?;
 
     // Build edge → adjacent triangle count.
     let mut edge_to_count: HashMap<(usize, usize), u8> = HashMap::new();
     for &(a, b, c) in &triangles {
-        for e in [(a.min(b), a.max(b)), (b.min(c), b.max(c)), (a.min(c), a.max(c))] {
+        for e in [
+            (a.min(b), a.max(b)),
+            (b.min(c), b.max(c)),
+            (a.min(c), a.max(c)),
+        ] {
             *edge_to_count.entry(e).or_insert(0) += 1;
         }
     }
@@ -177,5 +159,144 @@ fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Segment> {
         }
     }
 
-    out
+    Ok(out)
+}
+
+/// Keep the historical perturbation on the first attempt. Retry only exact
+/// vertex/constraint coincidences, always starting from the original vertices
+/// so perturbations do not accumulate. Invalid/crossing constraints are errors.
+fn triangulate_points(
+    points: &mut [Pt],
+    contours: &[Vec<usize>],
+) -> Result<Vec<(usize, usize, usize)>, String> {
+    triangulate_with(points, contours, |pts, rings| {
+        cdt::triangulate_contours(pts, rings)
+    })
+}
+
+fn triangulate_with(
+    points: &mut [Pt],
+    contours: &[Vec<usize>],
+    mut triangulate: impl FnMut(&[Pt], &[Vec<usize>]) -> Result<Vec<(usize, usize, usize)>, cdt::Error>,
+) -> Result<Vec<(usize, usize, usize)>, String> {
+    let original = points.to_vec();
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut magnitude = 0.0_f64;
+    for &(x, y) in points.iter() {
+        min.0 = min.0.min(x);
+        min.1 = min.1.min(y);
+        max.0 = max.0.max(x);
+        max.1 = max.1.max(y);
+        magnitude = magnitude.max(x.abs()).max(y.abs());
+    }
+    let extent = (max.0 - min.0).max(max.1 - min.1);
+    let retry_step = 1e-8_f64
+        .max(extent * 1e-10)
+        .max(magnitude * f64::EPSILON * 32.0);
+    for attempt in 0..4 {
+        let epsilon = if attempt == 0 {
+            1e-9
+        } else {
+            retry_step * 10_f64.powi(attempt - 1)
+        };
+        for (i, (point, &base)) in points.iter_mut().zip(&original).enumerate() {
+            let seed = i as f64 + attempt as f64 * 17.0;
+            point.0 = base.0 + epsilon * (seed * 1.1).sin();
+            point.1 = base.1 + epsilon * (seed * 1.3).cos();
+        }
+        match triangulate(points, contours) {
+            Ok(triangles) => return Ok(triangles),
+            Err(cdt::Error::PointOnFixedEdge(_)) if attempt < 3 => continue,
+            Err(error) => {
+                return Err(format!(
+                    "constrained triangulation failed after {} attempt(s): {error:?}",
+                    attempt + 1
+                ))
+            }
+        }
+    }
+    unreachable!("last attempt always returns")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coincidence_retry_is_deterministic_and_scale_aware() {
+        let original = vec![(1e9, 1e9), (1e9 + 10., 1e9), (1e9, 1e9 + 10.)];
+        let contours = vec![vec![0, 1, 2, 0]];
+        let run = || {
+            let mut pts = original.clone();
+            let mut calls = 0;
+            let triangles = triangulate_with(&mut pts, &contours, |pts, rings| {
+                calls += 1;
+                if calls == 1 {
+                    Err(cdt::Error::PointOnFixedEdge(0))
+                } else {
+                    cdt::triangulate_contours(pts, rings)
+                }
+            })
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert!(!triangles.is_empty());
+            assert_ne!(pts, original);
+            pts
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn persistent_coincidence_is_reported() {
+        let mut pts = vec![(0., 0.), (10., 0.), (0., 10.)];
+        let mut calls = 0;
+        let error = triangulate_with(&mut pts, &[vec![0, 1, 2, 0]], |_, _| {
+            calls += 1;
+            Err(cdt::Error::PointOnFixedEdge(1))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 4);
+        assert!(error.contains("PointOnFixedEdge(1)"));
+    }
+
+    #[test]
+    fn invalid_input_is_reported_without_retry() {
+        let outer = [(0., 0.), (f64::NAN, 0.), (0., 10.)];
+        assert!(get_triangles(&outer, &[])
+            .unwrap_err()
+            .contains("InvalidInput"));
+        assert!(skeletonize(&outer, &[])
+            .unwrap_err()
+            .contains("InvalidInput"));
+    }
+
+    #[test]
+    fn collinear_boundary_vertices_produce_triangles() {
+        let outer = [
+            (0., 0.),
+            (5., 0.),
+            (10., 0.),
+            (10., 2.5),
+            (10., 5.),
+            (5., 5.),
+            (0., 5.),
+            (0., 2.5),
+        ];
+        assert!(!get_triangles(&outer, &[]).unwrap().is_empty());
+        assert!(skeletonize(&outer, &[]).is_ok());
+    }
+
+    #[test]
+    fn perturbation_recovers_vertex_on_fixed_edge() {
+        let mut points = vec![(0., 0.), (10., 0.), (10., 5.), (0., 5.), (5., 0.)];
+        let contours = vec![vec![0, 1, 2, 3, 0]];
+        assert!(matches!(
+            cdt::triangulate_contours(&points, &contours),
+            Err(cdt::Error::PointOnFixedEdge(_))
+        ));
+        assert!(!triangulate_points(&mut points, &contours)
+            .unwrap()
+            .is_empty());
+    }
 }
