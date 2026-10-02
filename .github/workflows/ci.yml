@@ -23,7 +23,7 @@ jobs:
       - name: Install linter
         run: pip install ruff
       - name: Lint with ruff
-        run: ruff check .
+        run: ruff check --isolated --select E4,E7,E9,F .
 
   linux-x64:
     needs: [lint]
