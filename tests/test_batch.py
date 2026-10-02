@@ -3,7 +3,9 @@
 import time
 
 import numpy as np
-from topologize import topologize, topologize_batch, TopologizeJob
+import pytest
+
+from topologize import TopologizeJob, topologize, topologize_batch
 
 
 def line(x0, y0, x1, y1, n=10):
@@ -145,3 +147,34 @@ def test_batch_boundary_preprocessing_params():
         not np.allclose(b, d) for b, d in zip(br.chains, default.chains)
     )
     assert differs, "boundary-preprocessing params had no effect in batch"
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_batch_preserves_variable_widths(embedded):
+    curve = np.array([[0., 0.], [10., 0.], [20., 0.]])
+    widths = np.array([0.2, 2., 0.2])
+    curves = [np.column_stack([curve, widths])] if embedded else [curve]
+    radius = 0.2 if embedded else [widths]
+    job = TopologizeJob(curves, radius, min_tip_fraction=0.)
+    (batch,) = topologize_batch([job])
+    single = topologize(curves, inflation_radius=radius, min_tip_fraction=0.)
+    assert len(batch.chains) == len(single.chains) > 0
+    np.testing.assert_allclose(batch.nodes, single.nodes)
+    assert batch.chain_node_ids == single.chain_node_ids
+    for actual, expected in zip(batch.chains, single.chains):
+        np.testing.assert_allclose(actual, expected)
+
+    uniform = topologize([curve], inflation_radius=0.2, min_tip_fraction=0.)
+    assert any(a.shape != b.shape or not np.allclose(a, b)
+               for a, b in zip(single.chains, uniform.chains))
+
+
+def test_batch_variable_width_close_points():
+    curve = np.column_stack([np.linspace(0., 1., 20), np.zeros(20)])
+    widths = np.linspace(0.5, 1., 20)
+    job = TopologizeJob([curve], [widths], min_tip_fraction=0.)
+    (batch,) = topologize_batch([job])
+    single = topologize([curve], inflation_radius=[widths], min_tip_fraction=0.)
+    assert len(batch.chains) == len(single.chains) > 0
+    for actual, expected in zip(batch.chains, single.chains):
+        np.testing.assert_allclose(actual, expected)

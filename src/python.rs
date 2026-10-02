@@ -1234,7 +1234,7 @@ pub fn topologize(
 /// Each element of `jobs` is a tuple of (curves, buffer_distance,
 /// feature_size, simplification, min_tip_fraction, junction_merge_fraction,
 /// max_nodes, subdivision_ratio, resample, boundary_simplification,
-/// merge_tolerance) — one independent topologize invocation with its own
+/// merge_tolerance, per_curve_widths) — one independent topologize invocation with its own
 /// parameters, matching the boundary-preprocessing knobs of the single
 /// [`topologize`] entry point. The GIL is released for the parallel work.
 ///
@@ -1255,6 +1255,7 @@ pub fn topologize_batch(
         Option<f64>,
         Option<f64>,
         Option<f64>,
+        Option<Vec<Vec<f64>>>,
     )>,
 ) -> PyResult<Vec<(Vec<Vec<Pt>>, Vec<Pt>, Vec<(usize, usize)>)>> {
     use rayon::prelude::*;
@@ -1264,9 +1265,9 @@ pub fn topologize_batch(
     py.detach(|| {
         jobs.par_iter()
             .enumerate()
-            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n, sub, resample, bsimp, mtol))| {
+            .map(|(job_idx, (curves, bd, fs, simp, tip, jmf, max_n, sub, resample, bsimp, mtol, widths))| {
                 let (chains, nodes, ids, _) = topologize_inner(
-                    curves, *bd, *fs, *simp, *tip, *jmf, None, false, *sub, *max_n, *resample,
+                    curves, *bd, *fs, *simp, *tip, *jmf, widths.as_deref(), false, *sub, *max_n, *resample,
                     *bsimp, *mtol,
                 )
                 .map_err(|err| format!("topologize_batch job {job_idx} failed: {err}"))?;
