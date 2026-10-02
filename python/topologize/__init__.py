@@ -634,6 +634,7 @@ def topologize_batch(
             job.resample,
             job.boundary_simplification,
             job.merge_tolerance,
+            pcw,
         ))
     raw_results = _batch(packed)
     return [_unpack_result(*r) for r in raw_results]
