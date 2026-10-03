@@ -163,8 +163,9 @@ fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Result<Vec<Segment>, St
 }
 
 /// Keep the historical perturbation on the first attempt. Retry only exact
-/// vertex/constraint coincidences, always starting from the original vertices
-/// so perturbations do not accumulate. Invalid/crossing constraints are errors.
+/// vertex/constraint coincidences and `cdt`'s numerical wedge-search failure,
+/// always starting from the original vertices so perturbations do not
+/// accumulate. Invalid/crossing constraints are errors.
 fn triangulate_points(
     points: &mut [Pt],
     contours: &[Vec<usize>],
@@ -207,7 +208,7 @@ fn triangulate_with(
         }
         match triangulate(points, contours) {
             Ok(triangles) => return Ok(triangles),
-            Err(cdt::Error::PointOnFixedEdge(_)) if attempt < 3 => continue,
+            Err(cdt::Error::PointOnFixedEdge(_) | cdt::Error::WedgeEscape) if attempt < 3 => continue,
             Err(error) => {
                 return Err(format!(
                     "constrained triangulation failed after {} attempt(s): {error:?}",
@@ -258,6 +259,23 @@ mod tests {
         .unwrap_err();
         assert_eq!(calls, 4);
         assert!(error.contains("PointOnFixedEdge(1)"));
+    }
+
+    #[test]
+    fn wedge_escape_is_retried() {
+        let mut pts = vec![(0., 0.), (10., 0.), (0., 10.)];
+        let mut calls = 0;
+        let triangles = triangulate_with(&mut pts, &[vec![0, 1, 2, 0]], |pts, rings| {
+            calls += 1;
+            if calls == 1 {
+                Err(cdt::Error::WedgeEscape)
+            } else {
+                cdt::triangulate_contours(pts, rings)
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!(!triangles.is_empty());
     }
 
     #[test]

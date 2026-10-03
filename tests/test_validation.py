@@ -1,5 +1,8 @@
 """Tests for input validation: feature_size and max_nodes guards."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from topologize import inflate, topologize, topologize_batch, triangulate, TopologizeJob
@@ -109,3 +112,13 @@ def test_variable_width_close_points_does_not_panic():
     widths = [np.full(n, 8.0)]  # one radius per vertex
     result = topologize([curve], inflation_radius=widths)
     assert len(result.chains) >= 1
+
+
+def test_large_coordinates_recover_from_cdt_wedge_escape():
+    # This boat layer hits cdt's WedgeEscape when offset to 1e6 coordinates.
+    data = Path(__file__).parents[1] / "python/examples/data/topo_variability_input.json"
+    layer = next(x for x in json.loads(data.read_text())["layers"] if x["z"] == 1196.0)
+    curves = [np.asarray(c, dtype=float) for c in layer["curves"]]
+    expected = topologize(curves, inflation_radius=7.9)
+    shifted = topologize([c + 1e6 for c in curves], inflation_radius=7.9)
+    assert len(shifted.chains) == len(expected.chains) > 0
