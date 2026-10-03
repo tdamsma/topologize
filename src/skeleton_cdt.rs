@@ -163,16 +163,42 @@ fn midpoint_segments(outer: &[Pt], holes: &[Vec<Pt>]) -> Result<Vec<Segment>, St
 }
 
 /// Keep the historical perturbation on the first attempt. Retry only exact
-/// vertex/constraint coincidences and `cdt`'s numerical wedge-search failure,
-/// always starting from the original vertices so perturbations do not
-/// accumulate. Invalid/crossing constraints are errors.
+/// vertex/constraint coincidences, `cdt`'s numerical wedge-search failure and
+/// its internal assertion panics, always starting from the original vertices
+/// so perturbations do not accumulate. Invalid/crossing constraints are errors.
 fn triangulate_points(
     points: &mut [Pt],
     contours: &[Vec<usize>],
 ) -> Result<Vec<(usize, usize, usize)>, String> {
+    silence_cdt_panics();
     triangulate_with(points, contours, |pts, rings| {
         cdt::triangulate_contours(pts, rings)
     })
+}
+
+/// `cdt` panics are caught and reported as errors, so keep the default hook
+/// from printing them; panics from anywhere else still reach it.
+fn silence_cdt_panics() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let from_cdt = info.location().is_some_and(|loc| {
+                loc.file().split(['/', '\\']).any(|part| part.starts_with("cdt-"))
+            });
+            if !from_cdt {
+                previous(info);
+            }
+        }));
+    });
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
 }
 
 fn triangulate_with(
@@ -206,13 +232,27 @@ fn triangulate_with(
             point.0 = base.0 + epsilon * (seed * 1.1).sin();
             point.1 = base.1 + epsilon * (seed * 1.3).cos();
         }
-        match triangulate(points, contours) {
-            Ok(triangles) => return Ok(triangles),
-            Err(cdt::Error::PointOnFixedEdge(_) | cdt::Error::WedgeEscape) if attempt < 3 => continue,
-            Err(error) => {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            triangulate(points, contours)
+        }));
+        match outcome {
+            Ok(Ok(triangles)) => return Ok(triangles),
+            Ok(Err(cdt::Error::PointOnFixedEdge(_) | cdt::Error::WedgeEscape)) | Err(_)
+                if attempt < 3 =>
+            {
+                continue
+            }
+            Ok(Err(error)) => {
                 return Err(format!(
                     "constrained triangulation failed after {} attempt(s): {error:?}",
                     attempt + 1
+                ))
+            }
+            Err(payload) => {
+                return Err(format!(
+                    "constrained triangulation panicked after {} attempt(s): {}",
+                    attempt + 1,
+                    panic_message(payload.as_ref())
                 ))
             }
         }
@@ -276,6 +316,28 @@ mod tests {
         .unwrap();
         assert_eq!(calls, 2);
         assert!(!triangles.is_empty());
+    }
+
+    #[test]
+    fn cdt_panic_is_retried_then_reported() {
+        let mut pts = vec![(0., 0.), (10., 0.), (0., 10.)];
+        let mut calls = 0;
+        let triangles = triangulate_with(&mut pts, &[vec![0, 1, 2, 0]], |pts, rings| {
+            calls += 1;
+            if calls == 1 {
+                panic!("assertion failed: edge_ca.buddy != EMPTY_EDGE");
+            }
+            cdt::triangulate_contours(pts, rings)
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!(!triangles.is_empty());
+
+        let error = triangulate_with(&mut pts, &[vec![0, 1, 2, 0]], |_, _| -> Result<_, cdt::Error> {
+            panic!("assertion failed: edge_ca.buddy != EMPTY_EDGE")
+        })
+        .unwrap_err();
+        assert!(error.contains("panicked after 4 attempt(s): assertion failed"));
     }
 
     #[test]
