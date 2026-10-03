@@ -992,9 +992,10 @@ pub fn triangulate_curves(
     let polygons = preprocess_boundaries(polygons, feature_size, buffer_distance, subdivision_ratio, resample, boundary_simplification);
 
     let mut out = Vec::new();
-    for (outer, holes) in polygons {
+    for (polygon_idx, (outer, holes)) in polygons.into_iter().enumerate() {
         if outer.len() >= 3 {
-            out.extend(skeleton_cdt::get_triangles(&outer, &holes));
+            out.extend(skeleton_cdt::get_triangles(&outer, &holes)
+                .map_err(|err| PyValueError::new_err(format!("polygon {polygon_idx}: {err}")))?);
         }
     }
     Ok(out)
@@ -1088,11 +1089,12 @@ fn topologize_inner(
     // to a degree-1 node — after contracting degree-2 nodes so the whole spur is
     // measured, not a single edge.
     let mut all_segments: Vec<(Pt, Pt)> = Vec::new();
-    for (outer, holes) in &polygons {
+    for (polygon_idx, (outer, holes)) in polygons.iter().enumerate() {
         if outer.len() < 3 {
             continue;
         }
-        all_segments.extend(skeleton_cdt::skeletonize(outer, holes));
+        all_segments.extend(skeleton_cdt::skeletonize(outer, holes)
+            .map_err(|err| format!("polygon {polygon_idx}: {err}"))?);
     }
 
     if all_segments.is_empty() {
