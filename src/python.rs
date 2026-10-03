@@ -826,6 +826,109 @@ fn boundary_rdp_tol(boundary_simplification: Option<f64>, feature_size: f64) -> 
         .unwrap_or(feature_size * BOUNDARY_RDP_FRACTION)
 }
 
+/// True when segments `ab` and `cd` cross at a single interior point.
+fn segments_cross(a: Pt, b: Pt, c: Pt, d: Pt) -> bool {
+    let orient = |p: Pt, q: Pt, r: Pt| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+    let opposite = |s: f64, t: f64| (s > 0.0 && t < 0.0) || (s < 0.0 && t > 0.0);
+    opposite(orient(c, d, a), orient(c, d, b)) && opposite(orient(a, b, c), orient(a, b, d))
+}
+
+/// Flag every ring that has a segment crossing another segment of the same
+/// polygon (non-adjacent segments of the same ring included). Uses a uniform
+/// grid over segment bounding boxes, sized to the mean segment length.
+fn crossing_rings(rings: &[Vec<Pt>]) -> Vec<bool> {
+    // (ring, index in ring, start, end); rings under 3 points are skipped by the CDT.
+    let segments: Vec<(usize, usize, Pt, Pt)> = rings
+        .iter()
+        .enumerate()
+        .filter(|(_, ring)| ring.len() >= 3)
+        .flat_map(|(k, ring)| {
+            (0..ring.len()).map(move |i| (k, i, ring[i], ring[(i + 1) % ring.len()]))
+        })
+        .collect();
+    let mut flagged = vec![false; rings.len()];
+    if segments.is_empty() {
+        return flagged;
+    }
+    let total: f64 = segments
+        .iter()
+        .map(|&(_, _, a, b)| ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt())
+        .sum();
+    let cell = total / segments.len() as f64;
+    if !(cell > 0.0 && cell.is_finite()) {
+        return flagged;
+    }
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (s, &(_, _, a, b)) in segments.iter().enumerate() {
+        let (x0, x1) = ((a.0.min(b.0) / cell).floor() as i64, (a.0.max(b.0) / cell).floor() as i64);
+        let (y0, y1) = ((a.1.min(b.1) / cell).floor() as i64, (a.1.max(b.1) / cell).floor() as i64);
+        for gx in x0..=x1 {
+            for gy in y0..=y1 {
+                grid.entry((gx, gy)).or_default().push(s);
+            }
+        }
+    }
+    for members in grid.values() {
+        for (m, &s) in members.iter().enumerate() {
+            let (ks, is, a, b) = segments[s];
+            for &u in &members[m + 1..] {
+                let (ku, iu, c, d) = segments[u];
+                if flagged[ks] && flagged[ku] {
+                    continue;
+                }
+                if ks == ku {
+                    let n = rings[ks].len();
+                    let gap = is.abs_diff(iu);
+                    if gap <= 1 || gap == n - 1 {
+                        continue;
+                    }
+                }
+                if segments_cross(a, b, c, d) {
+                    flagged[ks] = true;
+                    flagged[ku] = true;
+                }
+            }
+        }
+    }
+    flagged
+}
+
+/// Simplification and resampling can collapse a narrow neck so a ring crosses
+/// itself or a neighbour, which the CDT rejects. Replace every preprocessed
+/// ring involved in a crossing with `fallback(raw ring)` until none remain.
+/// Raw Clipper rings do not cross, so fallback rings are never replaced again.
+fn untangle_rings(
+    processed: Vec<(Vec<Pt>, Vec<Vec<Pt>>)>,
+    raw: &[(Vec<Pt>, Vec<Vec<Pt>>)],
+    fallback: impl Fn(&[Pt]) -> Vec<Pt>,
+) -> Vec<(Vec<Pt>, Vec<Vec<Pt>>)> {
+    processed
+        .into_iter()
+        .zip(raw)
+        .map(|((outer, holes), (raw_outer, raw_holes))| {
+            let mut rings: Vec<Vec<Pt>> = std::iter::once(outer).chain(holes).collect();
+            let raw_rings: Vec<&Vec<Pt>> = std::iter::once(raw_outer).chain(raw_holes).collect();
+            let mut replaced = vec![false; rings.len()];
+            loop {
+                let mut changed = false;
+                for (k, crossing) in crossing_rings(&rings).into_iter().enumerate() {
+                    if crossing && !replaced[k] {
+                        rings[k] = fallback(raw_rings[k]);
+                        replaced[k] = true;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            let outer = rings.remove(0);
+            (outer, rings)
+        })
+        .collect()
+}
+
 fn preprocess_boundaries(
     polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)>,
     feature_size: f64,
@@ -872,17 +975,17 @@ fn preprocess_boundaries(
     if let Some(t) = resample_target {
         // RDP-simplify first; this is the boundary every sample is taken from.
         let post: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-            .into_iter()
+            .iter()
             .map(|(outer, holes)| {
                 (
-                    simplify(&outer),
+                    simplify(outer),
                     holes.iter().map(|h| simplify(h)).collect(),
                 )
             })
             .collect();
 
         if !curvature_on {
-            return post
+            let resampled = post
                 .iter()
                 .map(|(outer, holes)| {
                     (
@@ -894,6 +997,7 @@ fn preprocess_boundaries(
                     )
                 })
                 .collect();
+            return untangle_rings(resampled, &polygons, |ring| subdivide_ring(ring, t));
         }
 
         // Step 1+2: uniform pre-sample at the base spacing (so per-vertex turning
@@ -917,10 +1021,11 @@ fn preprocess_boundaries(
         let adapt = |ring: &[Pt]| -> Vec<Pt> {
             resample_ring_adaptive(ring, t, &curv_index, buffer_distance, ratio, corner_angle)
         };
-        return post
+        let resampled = post
             .iter()
             .map(|(outer, holes)| (adapt(outer), holes.iter().map(|h| adapt(h)).collect()))
             .collect();
+        return untangle_rings(resampled, &polygons, |ring| subdivide_ring(ring, t));
     }
 
     // --- Subdivide path (resample off) ------------------------------------
@@ -929,13 +1034,15 @@ fn preprocess_boundaries(
     let prep_outer = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&simplify(ring), max_seg) };
     let prep_hole = |ring: &[Pt]| -> Vec<Pt> { subdivide_ring(&simplify(ring), max_seg) };
     let base_polygons: Vec<(Vec<Pt>, Vec<Vec<Pt>>)> = polygons
-        .into_iter()
+        .iter()
         .map(|(outer, holes)| {
-            let outer = prep_outer(&outer);
+            let outer = prep_outer(outer);
             let holes = holes.iter().map(|h| prep_hole(h)).collect();
             (outer, holes)
         })
         .collect();
+    // Refinement below only inserts points on edges, so untangling first is enough.
+    let base_polygons = untangle_rings(base_polygons, &polygons, |ring| subdivide_ring(ring, max_seg));
 
     if curvature_on {
         let mut curv_index = CurvatureIndex::new(buffer_distance * 4.0);
@@ -1333,5 +1440,25 @@ mod tests {
         let index = CurvatureIndex::new(40.0);
         let out = resample_ring_adaptive(&ring, 3.0, &index, 10.0, 0.5, corner);
         assert!(out.len() >= 3, "single-anchor ring collapsed to {} pts", out.len());
+    }
+
+    #[test]
+    fn crossing_rings_flags_only_crossing_rings() {
+        let square = vec![(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+        let bowtie = vec![(10.0, 0.0), (12.0, 2.0), (12.0, 0.0), (10.0, 2.0)];
+        assert_eq!(crossing_rings(&[square.clone(), bowtie]), vec![false, true]);
+        let overlapping = vec![(3.0, 1.0), (6.0, 1.0), (6.0, 2.0), (3.0, 2.0)];
+        assert_eq!(crossing_rings(&[square, overlapping]), vec![true, true]);
+    }
+
+    #[test]
+    fn untangle_rings_replaces_crossing_ring_with_fallback() {
+        let outer = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let raw_hole = vec![(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)];
+        let tangled_hole = vec![(2.0, 2.0), (4.0, 4.0), (4.0, 2.0), (2.0, 4.0)];
+        let raw = vec![(outer.clone(), vec![raw_hole.clone()])];
+        let out = untangle_rings(vec![(outer.clone(), vec![tangled_hole])], &raw, |ring| subdivide_ring(ring, 1.0));
+        assert_eq!(out[0].0, outer);
+        assert_eq!(out[0].1[0], subdivide_ring(&raw_hole, 1.0));
     }
 }

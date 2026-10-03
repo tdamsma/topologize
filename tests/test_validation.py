@@ -122,3 +122,14 @@ def test_large_coordinates_recover_from_cdt_wedge_escape():
     expected = topologize(curves, inflation_radius=7.9)
     shifted = topologize([c + 1e6 for c in curves], inflation_radius=7.9)
     assert len(shifted.chains) == len(expected.chains) > 0
+
+
+@pytest.mark.parametrize("resample", [None, 0.6])
+def test_boundary_preprocessing_does_not_cross_narrow_neck(resample):
+    # Simplifying a narrow neck in this boundary used to make a ring cross itself.
+    curves = [
+        np.array([[-5.34, -2.14], [-4.86, -1.9], [-7.26, 0.92]]),
+        np.array([[0.07, 1.81], [-2.52, 0.11], [-2.81, -2.0], [-4.69, -9.29]]),
+    ]
+    result = topologize(curves, inflation_radius=1.0, resample=resample)
+    assert len(result.chains) > 0
